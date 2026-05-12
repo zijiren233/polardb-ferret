@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 ARG POLARDB_DEVEL_IMAGE=polardb/polardb_pg_devel:anolis8
 ARG RUNTIME_IMAGE=openanolis/anolisos:8
 
@@ -20,7 +22,8 @@ ARG POLARDB_REF
 
 USER root
 
-RUN dnf install -y git ca-certificates rpm-build || true
+RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
+    dnf install -y --setopt=keepcache=1 git ca-certificates rpm-build || true
 
 RUN git clone --depth 1 --branch "${POLARDB_REF}" \
     "${POLARDB_REPO}" \
@@ -51,12 +54,13 @@ ARG GEOS_REF
 
 COPY --from=polardb-rpm-builder /out/PolarDB-*.rpm /tmp/
 
-RUN rpm -ivh /tmp/PolarDB-*.rpm \
+RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
+    rpm -ivh /tmp/PolarDB-*.rpm \
     && ln -sfn "/u01/polardb_pg_${POLARDB_MAJOR}" /u01/polardb_pg \
     && mkdir -p "/usr/pgsql-${POLARDB_MAJOR}" \
     && ln -sfn /u01/polardb_pg/bin "/usr/pgsql-${POLARDB_MAJOR}/bin" \
-    && dnf install -y epel-release \
-    && dnf install -y \
+    && dnf install -y --setopt=keepcache=1 epel-release \
+    && dnf install -y --setopt=keepcache=1 \
     autoconf \
     automake \
     bzip2 \
@@ -90,16 +94,21 @@ RUN rpm -ivh /tmp/PolarDB-*.rpm \
     wget \
     which \
     zlib-devel \
-    && dnf clean all \
     && rm -f /tmp/PolarDB-*.rpm
 
 ENV PATH=/u01/polardb_pg/bin:$PATH
 ENV PG_CONFIG=/u01/polardb_pg/bin/pg_config
 ENV PGVERSION=17
 
-RUN mkdir -p /src \
-    && curl --retry 5 --retry-delay 3 -fsSL "https://download.osgeo.org/geos/geos-${GEOS_REF}.tar.bz2" \
-    | tar -xj -C /src \
+RUN --mount=type=cache,target=/var/cache/source-downloads,sharing=locked \
+    mkdir -p /src \
+    && geos_archive="/var/cache/source-downloads/geos-${GEOS_REF}.tar.bz2" \
+    && if [ ! -s "$geos_archive" ]; then \
+    curl --retry 5 --retry-delay 3 -fsSL \
+    "https://download.osgeo.org/geos/geos-${GEOS_REF}.tar.bz2" \
+    -o "$geos_archive"; \
+    fi \
+    && tar -xjf "$geos_archive" -C /src \
     && cmake -S "/src/geos-${GEOS_REF}" -B /src/geos-build \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr/local \
@@ -123,13 +132,19 @@ RUN git clone --depth 1 --branch "${DOCUMENTDB_REF}" \
     && /src/documentdb/scripts/install_setup_intel_decimal_math_lib.sh \
     && rm -rf "$INSTALL_DEPENDENCIES_ROOT"
 
-RUN git clone --depth 1 --branch "${PGVECTOR_REF}" \
+RUN --mount=type=cache,target=/var/cache/source-downloads,sharing=locked \
+    git clone --depth 1 --branch "${PGVECTOR_REF}" \
     https://github.com/pgvector/pgvector.git \
     /src/pgvector \
     && make -C /src/pgvector PG_CONFIG="${PG_CONFIG}" OPTFLAGS="" with_llvm=no \
     && make -C /src/pgvector PG_CONFIG="${PG_CONFIG}" with_llvm=no install \
-    && curl --retry 5 --retry-delay 3 -fsSL "https://download.osgeo.org/postgis/source/postgis-${POSTGIS_REF}.tar.gz" \
-    | tar -xz -C /src \
+    && postgis_archive="/var/cache/source-downloads/postgis-${POSTGIS_REF}.tar.gz" \
+    && if [ ! -s "$postgis_archive" ]; then \
+    curl --retry 5 --retry-delay 3 -fsSL \
+    "https://download.osgeo.org/postgis/source/postgis-${POSTGIS_REF}.tar.gz" \
+    -o "$postgis_archive"; \
+    fi \
+    && tar -xzf "$postgis_archive" -C /src \
     && cd "/src/postgis-${POSTGIS_REF}" \
     && ./autogen.sh \
     && ./configure \
@@ -171,9 +186,10 @@ ARG POLARDB_MAJOR
 
 COPY --from=polardb-rpm-builder /out/PolarDB-*.rpm /tmp/
 
-RUN dnf install -y \
+RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
+    dnf install -y --setopt=keepcache=1 \
     epel-release \
-    && dnf install -y \
+    && dnf install -y --setopt=keepcache=1 \
     bash \
     ca-certificates \
     geos \
@@ -181,7 +197,6 @@ RUN dnf install -y \
     libxml2 \
     proj \
     which \
-    && dnf clean all \
     && rpm -ivh /tmp/PolarDB-*.rpm \
     && ln -sfn "/u01/polardb_pg_${POLARDB_MAJOR}" /u01/polardb_pg \
     && (id postgres >/dev/null 2>&1 || useradd -m postgres) \
