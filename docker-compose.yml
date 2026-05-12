@@ -1,0 +1,34 @@
+services:
+  polardb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: polardb17-documentdb-ferretdb:latest
+    environment:
+      POLARDB_ENABLE_DOCUMENTDB: "1"
+      POLARDB_POSTGRES_PASSWORD: ferretpass
+    volumes:
+      - polardb-data:/var/lib/polardb
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "psql -U postgres -p 5432 -d postgres -Atc 'select 1' >/dev/null",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  ferretdb:
+    image: ghcr.io/ferretdb/ferretdb:2.7.0
+    depends_on:
+      polardb:
+        condition: service_healthy
+    environment:
+      FERRETDB_POSTGRESQL_URL: postgres://postgres:ferretpass@polardb:5432/postgres?sslmode=disable
+    ports:
+      - "127.0.0.1:27017:27017"
+
+volumes:
+  polardb-data:
