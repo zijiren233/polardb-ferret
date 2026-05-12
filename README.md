@@ -16,7 +16,7 @@
 镜像构建过程中会下载并编译：
 
 - PolarDB `POLARDB_17_STABLE`
-- DocumentDB `v0.107-0`
+- DocumentDB `v0.107.0-ferretdb-2.7.0`，来自 FerretDB 官方 DocumentDB fork
 - pgvector `v0.8.0`
 - PostGIS `3.5.2`
 - RUM `1.3.14`
@@ -44,7 +44,7 @@ Dockerfile 是三阶段构建：
 
 1. `polardb-rpm-builder`: 从 PolarDB `POLARDB_17_STABLE` 构建 RPM。
 2. `documentdb-builder`: 安装 PolarDB RPM，编译 GEOS、pgvector、PostGIS、RUM 和 DocumentDB。
-3. Runtime 镜像: 复制 PolarDB 17、DocumentDB 扩展、GEOS runtime 和 libbson，使用 `polardb-entrypoint.sh` 初始化数据库。
+3. Runtime 镜像: 复制 PolarDB 17、DocumentDB 扩展和 GEOS runtime，使用 `polardb-entrypoint.sh` 初始化数据库。
 
 初始化时会写入 FerretDB/DocumentDB 所需配置：
 
@@ -63,6 +63,15 @@ docker build -t polardb17-documentdb-ferretdb:latest .
 ```
 
 Dockerfile 使用 BuildKit cache mount 缓存 `dnf` 包下载和 GEOS/PostGIS 源码压缩包。GitHub Actions workflow 也开启了远端构建缓存。PolarDB、DocumentDB 和 PGXS 扩展的编译输出没有单独做目录级缓存，避免 PostgreSQL/PolarDB ABI、头文件或扩展版本变化时复用到不匹配的对象文件。
+
+构建实践：
+
+- 基础镜像使用 tag + digest 固定，避免同一个 tag 后续移动导致构建结果变化。
+- PolarDB 源码固定到 `POLARDB_COMMIT`，默认跟随已验证的 `POLARDB_17_STABLE` 提交。
+- `.dockerignore` 只放行构建需要的文件，减少上传到 BuildKit 的上下文。
+- 多行包列表按名称排序，便于 review 依赖变化。
+- Runtime 镜像只安装运行期包，并只从 builder 复制需要的 PolarDB/DocumentDB 文件和 GEOS 动态库。
+- 镜像内置 `HEALTHCHECK`，Compose 也基于 PostgreSQL 探活等待 FerretDB 启动。
 
 ## 使用 Docker Compose
 

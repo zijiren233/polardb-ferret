@@ -1,14 +1,15 @@
 # syntax=docker/dockerfile:1.7
 
-ARG POLARDB_DEVEL_IMAGE=polardb/polardb_pg_devel:anolis8
-ARG RUNTIME_IMAGE=openanolis/anolisos:8
+ARG POLARDB_DEVEL_IMAGE=polardb/polardb_pg_devel:anolis8@sha256:b1ad383fe741084fc239c43fa9c40e3707446b134770381a17cd1090499744df
+ARG RUNTIME_IMAGE=openanolis/anolisos:8@sha256:b5aceb026244814de1a1ab62a8cc3dc322fcff1578c58de2722035ef47669da5
 
 ARG POLARDB_REPO=https://github.com/polardb/PolarDB-for-PostgreSQL.git
 ARG POLARDB_REF=POLARDB_17_STABLE
+ARG POLARDB_COMMIT=d6ba61c832b00b58f199e3a50213af483cca561e
 ARG POLARDB_MAJOR=17
 
-ARG DOCUMENTDB_REPO=https://github.com/documentdb/documentdb.git
-ARG DOCUMENTDB_REF=v0.107-0
+ARG DOCUMENTDB_REPO=https://github.com/FerretDB/documentdb.git
+ARG DOCUMENTDB_REF=v0.107.0-ferretdb-2.7.0
 ARG PGVECTOR_REF=v0.8.0
 ARG POSTGIS_REF=3.5.2
 ARG RUM_REF=1.3.14
@@ -19,15 +20,19 @@ FROM ${POLARDB_DEVEL_IMAGE} AS polardb-rpm-builder
 
 ARG POLARDB_REPO
 ARG POLARDB_REF
+ARG POLARDB_COMMIT
 
 USER root
 
 RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
-    dnf install -y --setopt=keepcache=1 git ca-certificates rpm-build || true
+    dnf install -y --setopt=keepcache=1 ca-certificates git rpm-build
 
 RUN git clone --depth 1 --branch "${POLARDB_REF}" \
     "${POLARDB_REPO}" \
     /home/postgres/PolarDB-for-PostgreSQL \
+    && git -C /home/postgres/PolarDB-for-PostgreSQL fetch --depth 1 origin "${POLARDB_COMMIT}" \
+    && git -C /home/postgres/PolarDB-for-PostgreSQL checkout --detach "${POLARDB_COMMIT}" \
+    && git config --global --add safe.directory /home/postgres/PolarDB-for-PostgreSQL \
     && chown -R postgres:postgres /home/postgres/PolarDB-for-PostgreSQL
 
 WORKDIR /home/postgres/PolarDB-for-PostgreSQL/package/rpm
@@ -66,14 +71,14 @@ RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
     bzip2 \
     bzip2-devel \
     ca-certificates \
+    cmake \
     curl \
     diffutils \
     file \
     flex \
-    git \
     gcc \
     gcc-c++ \
-    geos-devel \
+    git \
     json-c-devel \
     krb5-devel \
     libcurl-devel \
@@ -82,7 +87,6 @@ RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
     libuuid-devel \
     libxml2-devel \
     lz4-devel \
-    cmake \
     make \
     openssl-devel \
     perl \
@@ -91,14 +95,13 @@ RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
     readline-devel \
     snappy-devel \
     tar \
-    wget \
     which \
     zlib-devel \
     && rm -f /tmp/PolarDB-*.rpm
 
 ENV PATH=/u01/polardb_pg/bin:$PATH
 ENV PG_CONFIG=/u01/polardb_pg/bin/pg_config
-ENV PGVERSION=17
+ENV PGVERSION=${POLARDB_MAJOR}
 
 RUN --mount=type=cache,target=/var/cache/source-downloads,sharing=locked \
     mkdir -p /src \
@@ -192,11 +195,9 @@ RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
     && dnf install -y --setopt=keepcache=1 \
     bash \
     ca-certificates \
-    geos \
     json-c \
     libxml2 \
     proj \
-    which \
     && rpm -ivh /tmp/PolarDB-*.rpm \
     && ln -sfn "/u01/polardb_pg_${POLARDB_MAJOR}" /u01/polardb_pg \
     && (id postgres >/dev/null 2>&1 || useradd -m postgres) \
@@ -205,10 +206,11 @@ RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
     && rm -f /tmp/PolarDB-*.rpm
 
 COPY --from=documentdb-builder /u01/polardb_pg_17/ /u01/polardb_pg_17/
-COPY --from=documentdb-builder /usr/local/ /usr/local/
-COPY --from=documentdb-builder /usr/lib64/libbson-1.0.so* /usr/lib64/
 
-RUN echo "/usr/local/lib64" > /etc/ld.so.conf.d/usr-local-lib64.conf \
+RUN --mount=type=bind,from=documentdb-builder,source=/usr/local/lib64,target=/tmp/documentdb-lib64,readonly \
+    mkdir -p /usr/local/lib64 \
+    && cp -a /tmp/documentdb-lib64/libgeos*.so* /usr/local/lib64/ \
+    && echo "/usr/local/lib64" > /etc/ld.so.conf.d/usr-local-lib64.conf \
     && echo "/usr/local/lib" > /etc/ld.so.conf.d/usr-local-lib.conf \
     && ldconfig \
     && test -f /u01/polardb_pg/share/postgresql/extension/documentdb.control \
@@ -217,9 +219,7 @@ RUN echo "/usr/local/lib64" > /etc/ld.so.conf.d/usr-local-lib64.conf \
     && test -f /u01/polardb_pg/share/postgresql/extension/postgis.control \
     && test -f /u01/polardb_pg/share/postgresql/extension/rum.control
 
-COPY polardb-entrypoint.sh /usr/local/bin/polardb-entrypoint.sh
-
-RUN chmod +x /usr/local/bin/polardb-entrypoint.sh
+COPY --chmod=0755 polardb-entrypoint.sh /usr/local/bin/polardb-entrypoint.sh
 
 ENV PATH=/u01/polardb_pg/bin:$PATH
 ENV POLARDB_PORT=5432
@@ -227,5 +227,8 @@ ENV POLARDB_DATA_ROOT=/var/lib/polardb
 ENV POLARDB_ENABLE_DOCUMENTDB=1
 
 EXPOSE 5432
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
+    CMD pg_isready -U postgres -p "${POLARDB_PORT:-5432}" -d postgres || exit 1
 
 ENTRYPOINT ["/usr/local/bin/polardb-entrypoint.sh"]

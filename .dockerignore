@@ -1,0 +1,4 @@
+*
+!Dockerfile
+!.dockerignore
+!polardb-entrypoint.sh
