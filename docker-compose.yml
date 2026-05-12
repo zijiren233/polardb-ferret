@@ -6,9 +6,10 @@ services:
     image: polardb17-documentdb-ferretdb:latest
     environment:
       POLARDB_ENABLE_DOCUMENTDB: "1"
-      POLARDB_POSTGRES_PASSWORD: ferretpass
+      POLARDB_USER: postgres
+      POLARDB_PASSWORD: ferretpass
     volumes:
-      - polardb-data:/var/lib/polardb
+      - polardb-data:/var/polardb
     healthcheck:
       test:
         [

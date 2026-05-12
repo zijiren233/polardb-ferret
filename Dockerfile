@@ -201,11 +201,11 @@ RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
     && rpm -ivh /tmp/PolarDB-*.rpm \
     && ln -sfn "/u01/polardb_pg_${POLARDB_MAJOR}" /u01/polardb_pg \
     && (id postgres >/dev/null 2>&1 || useradd -m postgres) \
-    && mkdir -p /var/lib/polardb \
-    && chown -R postgres:postgres /var/lib/polardb /u01/polardb_pg \
+    && mkdir -p /home/postgres /var/polardb /docker-entrypoint-initdb.d \
+    && chown -R postgres:postgres /home/postgres /var/polardb /docker-entrypoint-initdb.d /u01/polardb_pg \
     && rm -f /tmp/PolarDB-*.rpm
 
-COPY --from=documentdb-builder /u01/polardb_pg_17/ /u01/polardb_pg_17/
+COPY --chown=postgres:postgres --from=documentdb-builder /u01/polardb_pg_17/ /u01/polardb_pg_17/
 
 RUN --mount=type=bind,from=documentdb-builder,source=/usr/local/lib64,target=/tmp/documentdb-lib64,readonly \
     mkdir -p /usr/local/lib64 \
@@ -219,16 +219,24 @@ RUN --mount=type=bind,from=documentdb-builder,source=/usr/local/lib64,target=/tm
     && test -f /u01/polardb_pg/share/postgresql/extension/postgis.control \
     && test -f /u01/polardb_pg/share/postgresql/extension/rum.control
 
-COPY --chmod=0755 polardb-entrypoint.sh /usr/local/bin/polardb-entrypoint.sh
+COPY --chown=postgres:postgres --chmod=0755 docker-entrypoint.sh /home/postgres/docker-entrypoint.sh
 
 ENV PATH=/u01/polardb_pg/bin:$PATH
-ENV POLARDB_PORT=5432
-ENV POLARDB_DATA_ROOT=/var/lib/polardb
+ENV PGHOST=127.0.0.1
+ENV POLARDB_PORT=
+ENV POLARDB_DATA_DIR=/var/polardb
+ENV POLARDB_USER=
+ENV POLARDB_PASSWORD=
 ENV POLARDB_ENABLE_DOCUMENTDB=1
+
+USER postgres
+WORKDIR /home/postgres
+VOLUME ["/var/polardb"]
 
 EXPOSE 5432
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
     CMD pg_isready -U postgres -p "${POLARDB_PORT:-5432}" -d postgres || exit 1
 
-ENTRYPOINT ["/usr/local/bin/polardb-entrypoint.sh"]
+ENTRYPOINT ["./docker-entrypoint.sh"]
+CMD ["postgres"]
