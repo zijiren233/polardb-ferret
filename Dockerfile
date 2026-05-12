@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.6
 
 ARG POLARDB_DEVEL_IMAGE=polardb/polardb_pg_devel:anolis8@sha256:b1ad383fe741084fc239c43fa9c40e3707446b134770381a17cd1090499744df
 ARG RUNTIME_IMAGE=openanolis/anolisos:8@sha256:b5aceb026244814de1a1ab62a8cc3dc322fcff1578c58de2722035ef47669da5
