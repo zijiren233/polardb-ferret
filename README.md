@@ -143,6 +143,10 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
 
 Helm 默认随机生成数据库密码并写入 Secret；如果需要固定密码，可以设置 `--set auth.password=...`。
 
+默认 PVC 大小为 `3G`。Chart 会设置 StatefulSet 的 PVC retention policy：
+删除 release 时删除 PVC，缩容时保留 PVC。如果希望使用集群默认行为，可以设置
+`--set polardb.persistence.persistentVolumeClaimRetentionPolicy.enabled=false`。
+
 默认 PolarDB 镜像为：
 
 ```text

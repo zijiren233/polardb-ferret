@@ -11,6 +11,11 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
 The chart generates a random PostgreSQL password by default and stores it in a
 Secret. Set `auth.password` when a deterministic password is required.
 
+The default PVC size is `3G`. PVCs created by the StatefulSet are deleted when
+the release is deleted, and retained when the StatefulSet is scaled down. Set
+`polardb.persistence.persistentVolumeClaimRetentionPolicy.enabled=false` to use
+the cluster's default StatefulSet PVC retention behavior instead.
+
 Enable FerretDB with:
 
 ```bash

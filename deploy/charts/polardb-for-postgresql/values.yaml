@@ -32,8 +32,12 @@ polardb:
     storageClass: ""
     accessModes:
       - ReadWriteOnce
-    size: 20Gi
+    size: 3G
     annotations: {}
+    persistentVolumeClaimRetentionPolicy:
+      enabled: true
+      whenDeleted: Delete
+      whenScaled: Retain
 
   updateStrategy:
     type: RollingUpdate
