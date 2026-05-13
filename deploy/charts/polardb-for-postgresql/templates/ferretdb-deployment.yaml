@@ -1,0 +1,116 @@
+{{- if .Values.ferretdb.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "polardb-for-postgresql.ferretdbName" . }}
+  labels:
+    {{- include "polardb-for-postgresql.ferretdbLabels" . | nindent 4 }}
+    {{- with .Values.ferretdb.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.ferretdb.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.ferretdb.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "polardb-for-postgresql.ferretdbSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "polardb-for-postgresql.ferretdbSelectorLabels" . | nindent 8 }}
+        {{- with .Values.ferretdb.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.ferretdb.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ferretdb.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.ferretdb.waitForPolardb.enabled }}
+      initContainers:
+        - name: wait-for-polardb
+          image: {{ .Values.polardb.image | quote }}
+          imagePullPolicy: {{ .Values.polardb.imagePullPolicy }}
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              until pg_isready -h {{ include "polardb-for-postgresql.polardbServiceName" . }} -U {{ .Values.auth.user | quote }} -p {{ .Values.polardb.port }} -d {{ .Values.auth.database | quote }}; do
+                sleep 2
+              done
+      {{- end }}
+      containers:
+        - name: ferretdb
+          image: {{ .Values.ferretdb.image | quote }}
+          imagePullPolicy: {{ .Values.ferretdb.imagePullPolicy }}
+          {{- with .Values.ferretdb.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: mongodb
+              containerPort: {{ .Values.ferretdb.port }}
+              protocol: TCP
+          env:
+            - name: FERRETDB_POSTGRESQL_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "polardb-for-postgresql.secretName" . }}
+                  key: {{ .Values.auth.ferretdbPostgresqlUrlKey }}
+            - name: FERRETDB_LISTEN_ADDR
+              value: {{ .Values.ferretdb.listenAddr | quote }}
+            {{- with .Values.ferretdb.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.ferretdb.livenessProbe }}
+          livenessProbe:
+            tcpSocket:
+              port: mongodb
+            initialDelaySeconds: {{ .initialDelaySeconds }}
+            periodSeconds: {{ .periodSeconds }}
+            timeoutSeconds: {{ .timeoutSeconds }}
+            failureThreshold: {{ .failureThreshold }}
+          {{- end }}
+          {{- with .Values.ferretdb.readinessProbe }}
+          readinessProbe:
+            tcpSocket:
+              port: mongodb
+            initialDelaySeconds: {{ .initialDelaySeconds }}
+            periodSeconds: {{ .periodSeconds }}
+            timeoutSeconds: {{ .timeoutSeconds }}
+            failureThreshold: {{ .failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.ferretdb.resources | nindent 12 }}
+          {{- with .Values.ferretdb.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.ferretdb.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ferretdb.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ferretdb.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ferretdb.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

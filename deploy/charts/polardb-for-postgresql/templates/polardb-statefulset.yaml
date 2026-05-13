@@ -1,0 +1,154 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "polardb-for-postgresql.polardbName" . }}
+  labels:
+    {{- include "polardb-for-postgresql.polardbLabels" . | nindent 4 }}
+    {{- with .Values.polardb.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.polardb.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  serviceName: {{ include "polardb-for-postgresql.polardbHeadlessServiceName" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "polardb-for-postgresql.polardbSelectorLabels" . | nindent 6 }}
+  updateStrategy:
+    {{- toYaml .Values.polardb.updateStrategy | nindent 4 }}
+  template:
+    metadata:
+      labels:
+        {{- include "polardb-for-postgresql.polardbSelectorLabels" . | nindent 8 }}
+        {{- with .Values.polardb.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.polardb.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.polardb.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: polardb
+          image: {{ .Values.polardb.image | quote }}
+          imagePullPolicy: {{ .Values.polardb.imagePullPolicy }}
+          {{- with .Values.polardb.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: postgres
+              containerPort: {{ .Values.polardb.port }}
+              protocol: TCP
+          env:
+            - name: POLARDB_ENABLE_DOCUMENTDB
+              value: {{ ternary "1" "0" .Values.ferretdb.enabled | quote }}
+            - name: POLARDB_USER
+              value: {{ .Values.auth.user | quote }}
+            - name: POLARDB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "polardb-for-postgresql.secretName" . }}
+                  key: {{ .Values.auth.passwordKey }}
+            - name: POLARDB_PORT
+              value: {{ .Values.polardb.port | quote }}
+            - name: POLARDB_DATA_DIR
+              value: /var/polardb
+            {{- with .Values.polardb.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/polardb
+            {{- with .Values.polardb.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.polardb.startupProbe }}
+          startupProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - pg_isready -U "${POLARDB_USER:-postgres}" -p "${POLARDB_PORT:-5432}" -d {{ $.Values.auth.database | quote }}
+            initialDelaySeconds: {{ .initialDelaySeconds }}
+            periodSeconds: {{ .periodSeconds }}
+            timeoutSeconds: {{ .timeoutSeconds }}
+            failureThreshold: {{ .failureThreshold }}
+          {{- end }}
+          {{- with .Values.polardb.livenessProbe }}
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - pg_isready -U "${POLARDB_USER:-postgres}" -p "${POLARDB_PORT:-5432}" -d {{ $.Values.auth.database | quote }}
+            initialDelaySeconds: {{ .initialDelaySeconds }}
+            periodSeconds: {{ .periodSeconds }}
+            timeoutSeconds: {{ .timeoutSeconds }}
+            failureThreshold: {{ .failureThreshold }}
+          {{- end }}
+          {{- with .Values.polardb.readinessProbe }}
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - pg_isready -U "${POLARDB_USER:-postgres}" -p "${POLARDB_PORT:-5432}" -d {{ $.Values.auth.database | quote }}
+            initialDelaySeconds: {{ .initialDelaySeconds }}
+            periodSeconds: {{ .periodSeconds }}
+            timeoutSeconds: {{ .timeoutSeconds }}
+            failureThreshold: {{ .failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.polardb.resources | nindent 12 }}
+      {{- with .Values.polardb.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.polardb.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.polardb.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if or (not .Values.polardb.persistence.enabled) .Values.polardb.extraVolumes }}
+      volumes:
+        {{- if not .Values.polardb.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+        {{- with .Values.polardb.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+  {{- if .Values.polardb.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        {{- with .Values.polardb.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.polardb.persistence.accessModes | nindent 10 }}
+        {{- if .Values.polardb.persistence.storageClass }}
+        storageClassName: {{ .Values.polardb.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.polardb.persistence.size | quote }}
+  {{- end }}

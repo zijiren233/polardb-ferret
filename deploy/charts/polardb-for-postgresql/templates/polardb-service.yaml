@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "polardb-for-postgresql.polardbServiceName" . }}
+  labels:
+    {{- include "polardb-for-postgresql.polardbLabels" . | nindent 4 }}
+    {{- with .Values.polardb.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.polardb.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.polardb.service.type }}
+  ports:
+    - name: postgres
+      port: {{ .Values.polardb.port }}
+      targetPort: postgres
+      protocol: TCP
+  selector:
+    {{- include "polardb-for-postgresql.polardbSelectorLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "polardb-for-postgresql.polardbHeadlessServiceName" . }}
+  labels:
+    {{- include "polardb-for-postgresql.polardbLabels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  ports:
+    - name: postgres
+      port: {{ .Values.polardb.port }}
+      targetPort: postgres
+      protocol: TCP
+  selector:
+    {{- include "polardb-for-postgresql.polardbSelectorLabels" . | nindent 4 }}

@@ -1,0 +1,112 @@
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets: []
+
+auth:
+  user: postgres
+  # If empty, the chart generates a random password and reuses the existing
+  # generated Secret value on upgrades.
+  password: ""
+  database: postgres
+  existingSecret: ""
+  passwordKey: polardb-password
+  ferretdbPostgresqlUrlKey: ferretdb-postgresql-url
+
+polardb:
+  image: ghcr.io/labring-sigs/polardb-for-postgresql:latest
+  imagePullPolicy: IfNotPresent
+  port: 5432
+
+  annotations: {}
+  labels: {}
+  podAnnotations: {}
+  podLabels: {}
+
+  service:
+    type: ClusterIP
+    annotations: {}
+
+  persistence:
+    enabled: true
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 20Gi
+    annotations: {}
+
+  updateStrategy:
+    type: RollingUpdate
+
+  podSecurityContext: {}
+  securityContext:
+    runAsUser: 0
+
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  startupProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 60
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+  extraEnv: []
+  extraVolumeMounts: []
+  extraVolumes: []
+
+ferretdb:
+  enabled: false
+  replicaCount: 1
+  image: ghcr.io/ferretdb/ferretdb:2.7.0
+  imagePullPolicy: IfNotPresent
+  port: 27017
+  listenAddr: ":27017"
+
+  annotations: {}
+  labels: {}
+  podAnnotations: {}
+  podLabels: {}
+
+  service:
+    type: ClusterIP
+    port: 27017
+    annotations: {}
+
+  waitForPolardb:
+    enabled: true
+
+  podSecurityContext: {}
+  securityContext: {}
+
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  livenessProbe:
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 6
+
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []

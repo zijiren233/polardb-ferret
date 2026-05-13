@@ -1,0 +1,24 @@
+{{- if .Values.ferretdb.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "polardb-for-postgresql.ferretdbName" . }}
+  labels:
+    {{- include "polardb-for-postgresql.ferretdbLabels" . | nindent 4 }}
+    {{- with .Values.ferretdb.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.ferretdb.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.ferretdb.service.type }}
+  ports:
+    - name: mongodb
+      port: {{ .Values.ferretdb.service.port }}
+      targetPort: mongodb
+      protocol: TCP
+  selector:
+    {{- include "polardb-for-postgresql.ferretdbSelectorLabels" . | nindent 4 }}
+{{- end }}

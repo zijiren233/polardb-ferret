@@ -1,0 +1,18 @@
+PolarDB for PostgreSQL has been installed.
+
+Get the database password:
+  kubectl get secret {{ include "polardb-for-postgresql.secretName" . }} -n {{ .Release.Namespace }} -o jsonpath="{.data.{{ .Values.auth.passwordKey }}}" | base64 -d
+
+Forward the PostgreSQL endpoint:
+  kubectl port-forward svc/{{ include "polardb-for-postgresql.polardbServiceName" . }} -n {{ .Release.Namespace }} 5432:{{ .Values.polardb.port }}
+
+{{- if .Values.ferretdb.enabled }}
+Forward the MongoDB endpoint:
+  kubectl port-forward svc/{{ include "polardb-for-postgresql.ferretdbName" . }} -n {{ .Release.Namespace }} 27017:{{ .Values.ferretdb.service.port }}
+
+Connect with mongosh:
+  mongosh "mongodb://{{ .Values.auth.user }}:<password>@localhost:27017/ferretdb_test?authSource=ferretdb_test&directConnection=true"
+{{- else }}
+FerretDB is disabled by default. Enable it with:
+  helm upgrade -i {{ .Release.Name }} ./charts/polardb-for-postgresql -n {{ .Release.Namespace }} --set ferretdb.enabled=true
+{{- end }}

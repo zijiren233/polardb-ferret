@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       meta-images: ${{ steps.meta-images.outputs.value }}
+      primary-image: ${{ steps.meta-images.outputs.primary-image }}
+      cluster-images: ${{ steps.meta-images.outputs.cluster-images }}
     steps:
       - name: Build image metadata inputs
         id: meta-images
@@ -29,6 +31,17 @@ jobs:
           DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY || secrets.DOCKERHUB_REPOSITORY }}
           DEFAULT_REPOSITORY_NAME: ${{ github.event.repository.name }}
         run: |
+          ghcr_repository="$GHCR_REPOSITORY"
+          ghcr_repository="$(printf '%s' "$ghcr_repository" | tr '[:upper:]' '[:lower:]')"
+          case "$ghcr_repository" in
+            ghcr.io/*)
+              ghcr_image="$ghcr_repository"
+              ;;
+            *)
+              ghcr_image="ghcr.io/$ghcr_repository"
+              ;;
+          esac
+
           if [ -n "$DOCKERHUB_REPOSITORY" ]; then
             case "$DOCKERHUB_REPOSITORY" in
               */*)
@@ -41,12 +54,32 @@ jobs:
           elif [ -n "$DOCKERHUB_USERNAME" ]; then
             dockerhub_repository="$DOCKERHUB_USERNAME/$DEFAULT_REPOSITORY_NAME"
           fi
+          dockerhub_repository="$(printf '%s' "${dockerhub_repository:-}" | tr '[:upper:]' '[:lower:]')"
+          if [ -n "$dockerhub_repository" ]; then
+            case "$dockerhub_repository" in
+              docker.io/*)
+                dockerhub_image="$dockerhub_repository"
+                ;;
+              *)
+                dockerhub_image="docker.io/$dockerhub_repository"
+                ;;
+            esac
+          fi
 
           {
             echo 'value<<EOF'
-            echo "ghcr.io/$GHCR_REPOSITORY"
-            if [ -n "$dockerhub_repository" ]; then
-              echo "docker.io/$dockerhub_repository"
+            echo "$ghcr_image"
+            if [ -n "${dockerhub_image:-}" ]; then
+              echo "$dockerhub_image"
+            fi
+            echo 'EOF'
+
+            echo "primary-image=$ghcr_image"
+
+            echo 'cluster-images<<EOF'
+            echo "${ghcr_image}-cluster"
+            if [ -n "${dockerhub_image:-}" ]; then
+              echo "${dockerhub_image}-cluster"
             fi
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
@@ -91,3 +124,94 @@ jobs:
         ${{ (vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME) != '' && format('- registry: docker.io
           username: {0}
           password: {1}', vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME, secrets.DOCKERHUB_PASSWORD) || '' }}
+
+  sealos-cluster-image:
+    name: Sealos Cluster Image
+    needs:
+      - docker-prepare
+      - docker-build
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name == 'push' && github.actor != 'dependabot[bot]' }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME || secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install sealos
+        run: |
+          sudo bash .github/scripts/install.sh
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_PASSWORD != '' }}
+        with:
+          registry: docker.io
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_PASSWORD }}
+
+      - name: Extract app image metadata
+        id: app-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.docker-prepare.outputs.primary-image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Extract cluster image metadata
+        id: cluster-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.docker-prepare.outputs.cluster-images }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - name: Cache chart images
+        working-directory: deploy
+        run: |
+          set -euo pipefail
+
+          sudo sealos login -u "${{ github.repository_owner }}" -p "${{ secrets.GITHUB_TOKEN }}" ghcr.io
+
+          app_image="${{ needs.docker-prepare.outputs.primary-image }}:${{ steps.app-meta.outputs.version }}"
+          sed -i "s#image: ghcr.io/labring-sigs/polardb-for-postgresql:latest#image: ${app_image}#g" charts/polardb-for-postgresql/values.yaml
+
+          sudo sealos registry save --registry-dir=registry_amd64 --arch amd64 .
+          sudo sealos registry save --registry-dir=registry_arm64 --arch arm64 .
+
+      - name: Build and push cluster image
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy
+          file: deploy/Kubefile
+          labels: ${{ steps.cluster-meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.cluster-meta.outputs.tags }}

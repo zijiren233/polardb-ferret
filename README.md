@@ -76,7 +76,7 @@ Dockerfile 使用 BuildKit cache mount 缓存 `dnf` 包下载和 GEOS/PostGIS �
 - 多行包列表按名称排序，便于 review 依赖变化。
 - Runtime 镜像只安装运行期包，并只从 builder 复制需要的 PolarDB/DocumentDB 文件和 GEOS 动态库。
 - Runtime 约定尽量贴近 `polardb/polardb_pg_local_instance:17.9.1.0.248cd221`: `USER postgres`、`WORKDIR /home/postgres`、`ENTRYPOINT ["./docker-entrypoint.sh"]`、`CMD ["postgres"]`、`POLARDB_USER`、`POLARDB_PASSWORD`、`POLARDB_PORT`、`POLARDB_DATA_DIR=/var/polardb`、`PGHOST=127.0.0.1`。
-- `POLARDB_ENABLE_DOCUMENTDB=1` 是本镜像提供的开关；默认启用 DocumentDB 配置和扩展初始化。
+- `POLARDB_ENABLE_DOCUMENTDB=1` 是本镜像提供的开关；镜像/Compose 默认启用 DocumentDB 配置和扩展初始化，Helm chart 默认关闭 FerretDB 时会把该值设为 `0`。已有数据目录后续开启该值时，entrypoint 会在下次启动时补齐 DocumentDB 配置并执行幂等的 `CREATE EXTENSION IF NOT EXISTS documentdb CASCADE;`。
 - 镜像内置 `HEALTHCHECK`，Compose 也基于 PostgreSQL 探活等待 FerretDB 启动。
 
 ## 使用 Docker Compose
@@ -118,6 +118,67 @@ docker compose down -v
 ```
 
 如果修改了 `POLARDB_PASSWORD`，已有数据卷不会自动重置 PostgreSQL 角色密码；需要手动修改数据库角色密码，或使用 `docker compose down -v` 重新初始化。
+
+如果直接使用宿主机目录挂载 `/var/polardb`，该目录需要能被容器内 `postgres`
+用户写入。镜像默认以 `uid=1000,gid=1000` 运行，可以在启动前准备目录：
+
+```bash
+mkdir -p ./polardb-data
+sudo chown 1000:1000 ./polardb-data
+docker run -d \
+  --name polardb \
+  -v "$PWD/polardb-data:/var/polardb" \
+  -e POLARDB_PASSWORD=ferretpass \
+  polardb17-documentdb-ferretdb:latest
+```
+
+## 使用 Helm
+
+默认 chart 会部署单副本 PolarDB StatefulSet、PostgreSQL ClusterIP Service、Secret 和 PVC，不开启 FerretDB：
+
+```bash
+helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
+  -n polardb --create-namespace
+```
+
+Helm 默认随机生成数据库密码并写入 Secret；如果需要固定密码，可以设置 `--set auth.password=...`。
+
+默认 PolarDB 镜像为：
+
+```text
+ghcr.io/labring-sigs/polardb-for-postgresql:latest
+```
+
+如果要从本机访问 MongoDB 协议入口：
+
+```bash
+helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
+  -n polardb --create-namespace \
+  --set ferretdb.enabled=true
+
+kubectl port-forward svc/polardb-for-postgresql-ferretdb -n polardb 27017:27017
+POLARDB_PASSWORD="$(kubectl get secret polardb-for-postgresql-auth -n polardb -o jsonpath='{.data.polardb-password}' | base64 -d)"
+mongosh "mongodb://postgres:${POLARDB_PASSWORD}@localhost:27017/ferretdb_test?authSource=ferretdb_test&directConnection=true"
+```
+
+已有 PVC 后续从默认 PostgreSQL 模式升级到 `ferretdb.enabled=true` 时，PolarDB Pod 重启会自动补齐 DocumentDB 配置并创建扩展。
+
+## 使用 Sealos Cluster Image
+
+发布 workflow 会基于 `deploy/Kubefile` 构建多架构 cluster image，并在镜像名后追加 `-cluster`。例如仓库为 `labring-sigs/PolarDB-for-PostgreSQL` 时，默认 GHCR cluster image 为：
+
+```text
+ghcr.io/labring-sigs/polardb-for-postgresql-cluster:<tag>
+```
+
+安装时可通过环境变量覆盖 release、namespace 或 Helm 参数：
+
+```bash
+sealos run ghcr.io/labring-sigs/polardb-for-postgresql-cluster:<tag>
+
+NAMESPACE=polardb HELM_OPTS='--set auth.password=change-me --set ferretdb.enabled=true' \
+  sealos run ghcr.io/labring-sigs/polardb-for-postgresql-cluster:<tag>
+```
 
 ## 测试
 

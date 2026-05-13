@@ -1,0 +1,14 @@
+apiVersion: v2
+name: polardb-for-postgresql
+description: PolarDB for PostgreSQL with optional DocumentDB and FerretDB MongoDB mode
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - polardb
+  - postgresql
+  - documentdb
+  - ferretdb
+  - mongodb
+maintainers:
+  - name: labring-sigs

@@ -102,6 +102,203 @@ temp_server_stop() {
         -w stop
 }
 
+documentdb_enabled() {
+    case "${POLARDB_ENABLE_DOCUMENTDB:-1}" in
+        1|true|TRUE|yes|YES|on|ON)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+trim() {
+    local value
+    value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+remove_postgresql_conf_block() {
+    local conf end start tmp
+    conf="$1"
+    start="$2"
+    end="$3"
+    tmp="$(mktemp)"
+
+    awk -v start="$start" -v end="$end" '
+        $0 == start { skip = 1; next }
+        $0 == end { skip = 0; next }
+        skip { next }
+        { print }
+    ' "$conf" > "$tmp"
+
+    cat "$tmp" > "$conf"
+    rm -f "$tmp"
+}
+
+remove_postgresql_conf_key() {
+    local conf key tmp
+    conf="$1"
+    key="$2"
+    tmp="$(mktemp)"
+
+    awk -v key="$key" '
+        function active_key(line) {
+            sub(/^[[:space:]]+/, "", line)
+            if (line ~ /^#/) {
+                return ""
+            }
+            sub(/[[:space:]=].*$/, "", line)
+            return line
+        }
+
+        active_key($0) == key { next }
+        { print }
+    ' "$conf" > "$tmp"
+
+    cat "$tmp" > "$conf"
+    rm -f "$tmp"
+}
+
+read_postgresql_conf_value() {
+    local conf key
+    conf="$1"
+    key="$2"
+
+    awk -v key="$key" '
+        function active_key(line) {
+            sub(/^[[:space:]]+/, "", line)
+            if (line ~ /^#/) {
+                return ""
+            }
+            sub(/[[:space:]=].*$/, "", line)
+            return line
+        }
+
+        function active_value(line) {
+            sub(/^[[:space:]]+/, "", line)
+            sub(/^[^[:space:]=]+[[:space:]]*/, "", line)
+            sub(/^=[[:space:]]*/, "", line)
+            sub(/[[:space:]]*#.*$/, "", line)
+            sub(/^[[:space:]]+/, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            return line
+        }
+
+        active_key($0) == key { value = active_value($0) }
+        END { print value }
+    ' "$conf"
+}
+
+library_list_contains() {
+    local current item library
+    current="$1"
+    library="$2"
+
+    IFS=',' read -ra items <<< "$current"
+    for item in "${items[@]}"; do
+        item="$(trim "$item")"
+        if [ "$item" = "$library" ]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+merge_shared_preload_libraries() {
+    local current library
+    current="$1"
+    current="${current%;}"
+    current="${current//\"/}"
+    current="${current//\'/}"
+    current="$(trim "$current")"
+
+    if [ -z "$current" ]; then
+        current="$(read_postgresql_conf_value "$BASE/share/postgresql/polardb.conf.sample" "shared_preload_libraries")"
+        current="${current%;}"
+        current="${current//\"/}"
+        current="${current//\'/}"
+        current="$(trim "$current")"
+    fi
+
+    if [ -z "$current" ]; then
+        current='pg_cron,pg_documentdb_core,pg_documentdb'
+    fi
+
+    for library in pg_cron pg_documentdb_core pg_documentdb; do
+        if ! library_list_contains "$current" "$library"; then
+            current="${current},${library}"
+        fi
+    done
+
+    printf '%s' "$current"
+}
+
+configure_documentdb() {
+    local conf shared_preload_libraries
+    conf="$PRIMARY/postgresql.conf"
+
+    shared_preload_libraries="$(read_postgresql_conf_value "$conf" "shared_preload_libraries")"
+    shared_preload_libraries="$(merge_shared_preload_libraries "$shared_preload_libraries")"
+
+    remove_postgresql_conf_block "$conf" "# BEGIN polardb-documentdb" "# END polardb-documentdb"
+    remove_postgresql_conf_key "$conf" "shared_preload_libraries"
+    remove_postgresql_conf_key "$conf" "cron.database_name"
+    remove_postgresql_conf_key "$conf" "documentdb.enableCompact"
+    remove_postgresql_conf_key "$conf" "documentdb.enableIndexOrderbyPushdown"
+    remove_postgresql_conf_key "$conf" "documentdb.enableLetAndCollationForQueryMatch"
+    remove_postgresql_conf_key "$conf" "documentdb.enableNowSystemVariable"
+    remove_postgresql_conf_key "$conf" "documentdb.enableSchemaValidation"
+    remove_postgresql_conf_key "$conf" "documentdb.enableBypassDocumentValidation"
+    remove_postgresql_conf_key "$conf" "documentdb.enableUserCrud"
+    remove_postgresql_conf_key "$conf" "documentdb.maxUserLimit"
+
+    {
+        echo "# BEGIN polardb-documentdb"
+        printf "shared_preload_libraries = '%s'\n" "$shared_preload_libraries"
+        cat <<'EOF'
+cron.database_name = 'postgres'
+documentdb.enableCompact = true
+documentdb.enableIndexOrderbyPushdown = true
+documentdb.enableLetAndCollationForQueryMatch = true
+documentdb.enableNowSystemVariable = true
+documentdb.enableSchemaValidation = true
+documentdb.enableBypassDocumentValidation = true
+documentdb.enableUserCrud = true
+documentdb.maxUserLimit = 100
+# END polardb-documentdb
+EOF
+    } >> "$conf"
+
+    if [ "$(id -u)" = "0" ]; then
+        chown postgres:postgres "$conf"
+    fi
+}
+
+create_documentdb_extension() {
+    echo "Creating DocumentDB extension if needed"
+    process_sql -c "CREATE EXTENSION IF NOT EXISTS documentdb CASCADE;"
+}
+
+reconcile_documentdb() {
+    local status
+
+    echo "Reconciling DocumentDB configuration"
+    configure_documentdb
+
+    temp_server_start
+
+    status=0
+    create_documentdb_extension || status=$?
+    temp_server_stop || status=$?
+
+    return "$status"
+}
+
 postgres_wants_help() {
     local arg
     for arg; do
@@ -136,19 +333,8 @@ initialize_database() {
         echo "password_encryption = 'scram-sha-256'"
     } >> "$PRIMARY/postgresql.conf"
 
-    if [ "${POLARDB_ENABLE_DOCUMENTDB:-1}" = "1" ]; then
-        {
-            echo "shared_preload_libraries = '\$libdir/polar_vfs,\$libdir/polar_io_stat,\$libdir/polar_monitor_preload,\$libdir/polar_worker,pg_cron,pg_documentdb_core,pg_documentdb'"
-            echo "cron.database_name = 'postgres'"
-            echo "documentdb.enableCompact = true"
-            echo "documentdb.enableIndexOrderbyPushdown = true"
-            echo "documentdb.enableLetAndCollationForQueryMatch = true"
-            echo "documentdb.enableNowSystemVariable = true"
-            echo "documentdb.enableSchemaValidation = true"
-            echo "documentdb.enableBypassDocumentValidation = true"
-            echo "documentdb.enableUserCrud = true"
-            echo "documentdb.maxUserLimit = 100"
-        } >> "$PRIMARY/postgresql.conf"
+    if documentdb_enabled; then
+        configure_documentdb
     fi
 
     {
@@ -176,9 +362,8 @@ CREATE ROLE :"user" WITH PASSWORD :'password' SUPERUSER LOGIN;
 SQL
         fi
     fi
-    if [ "${POLARDB_ENABLE_DOCUMENTDB:-1}" = "1" ]; then
-        echo "Creating DocumentDB extension"
-        process_sql -c "CREATE EXTENSION IF NOT EXISTS documentdb CASCADE;"
+    if documentdb_enabled; then
+        create_documentdb_extension
     fi
 
     process_init_files /docker-entrypoint-initdb.d/*
@@ -211,6 +396,9 @@ main() {
             initialize_database
         else
             echo "PolarDB data directory already initialized, skipping init"
+            if documentdb_enabled; then
+                reconcile_documentdb
+            fi
         fi
 
         set -- "$BASE/bin/postgres" -D "$PRIMARY" --cluster-name=primary

@@ -1,0 +1,1 @@
+ghcr.io/ferretdb/ferretdb:2.7.0
