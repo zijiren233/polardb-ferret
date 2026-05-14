@@ -10,8 +10,6 @@ auth:
   password: ""
   database: postgres
   existingSecret: ""
-  passwordKey: polardb-password
-  ferretdbPostgresqlUrlKey: ferretdb-postgresql-url
 
 polardb:
   image: ghcr.io/labring-sigs/polardb-for-postgresql:latest

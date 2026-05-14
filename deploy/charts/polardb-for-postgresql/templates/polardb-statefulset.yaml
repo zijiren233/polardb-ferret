@@ -65,7 +65,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ include "polardb-for-postgresql.secretName" . }}
-                  key: {{ .Values.auth.passwordKey }}
+                  key: password
             - name: POLARDB_PORT
               value: {{ .Values.polardb.port | quote }}
             - name: POLARDB_DATA_DIR
