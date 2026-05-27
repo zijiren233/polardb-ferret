@@ -594,12 +594,13 @@ main() {
             fi
         else
             if ha_enabled && [ -f "$HA_DEMOTED_MARKER" ]; then
-                if primary_service_available_for_rejoin; then
+                if [ "${POLARDB_HA_REBUILD_DEMOTED:-0}" = "1" ] && primary_service_available_for_rejoin; then
                     echo "This pod was demoted; rebuilding it as standby from the current primary"
                     rm -f "$HA_DEMOTED_MARKER"
                     POLARDB_HA_BOOTSTRAP_PRIMARY_HOST="$(ha_rejoin_primary_host)" initialize_ha_standby
                 else
-                    echo "This pod was demoted and no current primary is reachable for rejoin" >&2
+                    echo "This pod was demoted and requires manual rejoin or rebuild" >&2
+                    echo "Data is preserved at $DATA_ROOT. Set POLARDB_HA_REBUILD_DEMOTED=1 only after accepting possible data loss." >&2
                     exit 1
                 fi
             fi

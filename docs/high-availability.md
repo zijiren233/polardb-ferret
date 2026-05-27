@@ -210,7 +210,9 @@ kubectl exec -n polardb <primary-pod> -c polardb -- \
 - 新 Pod 会按 standby 初始化流程从当前 primary 重新 clone。
 
 如果必须保留 PVC 对象并在容器内重建，需要先确认没有任何进程使用旧数据目录，再由运维脚本设置
-`POLARDB_HA_REJOIN=1` 并重启该 Pod。不要在无法确认新 primary 健康时执行该操作。
+`POLARDB_HA_REJOIN=1` 或 `POLARDB_HA_REBUILD_DEMOTED=1` 并重启该 Pod。
+这会清理旧 primary 的本地数据并从当前 primary 重新 clone；在异步复制下，如果旧 primary 中存在未复制到新
+primary 的已提交事务，这些事务会丢失，因此不要在无法确认新 primary 健康和可接受 RPO 时执行该操作。
 
 ## 暂停自动故障切换
 
