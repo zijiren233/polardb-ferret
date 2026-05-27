@@ -20,7 +20,7 @@ ha:
   retryPeriodSeconds: 5
   primaryWaitSeconds: 600
   promoteTimeoutSeconds: 60
-  maximumLagOnFailoverBytes: 1048576
+  maximumLagOnFailoverBytes: "1048576"
   checkTimeline: true
   replication:
     walKeepSize: 1024MB

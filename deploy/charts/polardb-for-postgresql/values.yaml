@@ -81,7 +81,7 @@ ha:
   failover:
     enabled: true
     promoteTimeoutSeconds: 60
-    maximumLagOnFailoverBytes: 1048576
+    maximumLagOnFailoverBytes: "1048576"
     checkTimeline: true
   replication:
     walKeepSize: 1024MB

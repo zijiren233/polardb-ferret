@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import datetime
+import decimal
 import http.server
 import json
 import os
@@ -56,7 +57,17 @@ LEASE_NAME = resolve_lease_name()
 LEASE_DURATION = int(os.environ.get("POLARDB_HA_LEASE_DURATION_SECONDS", "30"))
 RETRY_PERIOD = int(os.environ.get("POLARDB_HA_RETRY_PERIOD_SECONDS", "5"))
 PROMOTE_TIMEOUT = int(os.environ.get("POLARDB_HA_PROMOTE_TIMEOUT_SECONDS", "60"))
-MAXIMUM_LAG_ON_FAILOVER = int(os.environ.get("POLARDB_HA_MAXIMUM_LAG_ON_FAILOVER_BYTES", "1048576"))
+
+
+def env_int(name, default):
+    value = os.environ.get(name, default)
+    try:
+        return int(value)
+    except ValueError:
+        return int(decimal.Decimal(value))
+
+
+MAXIMUM_LAG_ON_FAILOVER = env_int("POLARDB_HA_MAXIMUM_LAG_ON_FAILOVER_BYTES", "1048576")
 CHECK_TIMELINE = os.environ.get("POLARDB_HA_CHECK_TIMELINE", "1").lower() in (
     "1",
     "true",
