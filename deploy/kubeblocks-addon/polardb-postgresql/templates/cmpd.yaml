@@ -212,6 +212,16 @@ spec:
           periodSeconds: 5
           timeoutSeconds: 5
           failureThreshold: 12
+        startupProbe:
+          exec:
+            command:
+              - /bin/bash
+              - -ec
+              - pg_isready -h 127.0.0.1 -U "${POLARDB_USER:-postgres}" -p "${POLARDB_PORT:-5432}" -d postgres -q
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 60
         livenessProbe:
           exec:
             command:

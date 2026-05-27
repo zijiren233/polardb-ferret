@@ -105,9 +105,13 @@ def parse_kube_timestamp(value):
         base, rest = normalized.split(".", 1)
         fraction = rest[:6].ljust(6, "0")
         tz = rest[6:] or "+0000"
+        if len(tz) == 6 and tz[3] == ":":
+            tz = tz[:3] + tz[4:]
         normalized = f"{base}.{fraction}{tz}"
         fmt = "%Y-%m-%dT%H:%M:%S.%f%z"
     else:
+        if len(normalized) >= 6 and normalized[-3] == ":" and normalized[-6] in "+-":
+            normalized = normalized[:-3] + normalized[-2:]
         fmt = "%Y-%m-%dT%H:%M:%S%z"
     return datetime.datetime.strptime(normalized, fmt)
 

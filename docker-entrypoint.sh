@@ -255,6 +255,11 @@ initialize_ha_standby() {
 
     mv "$tmp_primary" "$PRIMARY"
     mv "$tmp_shared" "$SHARED"
+    chmod 700 "$PRIMARY"
+    chmod 700 "$SHARED" || :
+    if [ "$(id -u)" = "0" ]; then
+        chown -R postgres:postgres "$PRIMARY" "$SHARED"
+    fi
     configure_standby_recovery
 }
 
