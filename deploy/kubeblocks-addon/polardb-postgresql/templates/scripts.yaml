@@ -9,5 +9,5 @@ metadata:
 data:
 {{- range $path, $_ := .Files.Glob "scripts/*" }}
   {{ base $path }}: |-
-{{ $.Files.Get $path | nindent 4 }}
+{{ $.Files.Get $path | indent 4 }}
 {{- end }}

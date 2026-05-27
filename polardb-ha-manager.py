@@ -4,6 +4,7 @@ import http.server
 import json
 import os
 import re
+import socketserver
 import ssl
 import subprocess
 import sys
@@ -22,10 +23,36 @@ DB_USER = os.environ.get("POLARDB_USER", "postgres")
 DB_PASSWORD = os.environ.get("POLARDB_PASSWORD", "")
 
 POD_NAME = os.environ["POD_NAME"]
-NAMESPACE = os.environ.get("POD_NAMESPACE") or open(
-    "/var/run/secrets/kubernetes.io/serviceaccount/namespace", encoding="utf-8"
-).read().strip()
-LEASE_NAME = os.environ.get("POLARDB_HA_LEASE_NAME", "polardb-primary")
+
+
+def serviceaccount_namespace():
+    with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace", encoding="utf-8") as ns_file:
+        return ns_file.read().strip()
+
+
+def resolve_namespace():
+    namespace = os.environ.get("POD_NAMESPACE") or os.environ.get("CLUSTER_NAMESPACE")
+    if not namespace or namespace.startswith("$("):
+        return serviceaccount_namespace()
+    return namespace
+
+
+def component_name_from_pod():
+    return re.sub(r"-[0-9]+$", "", POD_NAME)
+
+
+def resolve_lease_name():
+    lease_name = os.environ.get("POLARDB_HA_LEASE_NAME", "polardb-primary")
+    component_name = os.environ.get("CLUSTER_COMPONENT_NAME") or component_name_from_pod()
+    if "$(CLUSTER_COMPONENT_NAME)" in lease_name:
+        lease_name = lease_name.replace("$(CLUSTER_COMPONENT_NAME)", component_name)
+    if not lease_name or lease_name.startswith("$("):
+        lease_name = f"{component_name}-primary"
+    return lease_name
+
+
+NAMESPACE = resolve_namespace()
+LEASE_NAME = resolve_lease_name()
 LEASE_DURATION = int(os.environ.get("POLARDB_HA_LEASE_DURATION_SECONDS", "30"))
 RETRY_PERIOD = int(os.environ.get("POLARDB_HA_RETRY_PERIOD_SECONDS", "5"))
 PROMOTE_TIMEOUT = int(os.environ.get("POLARDB_HA_PROMOTE_TIMEOUT_SECONDS", "60"))
@@ -431,9 +458,14 @@ class RoleProbeHandler(http.server.BaseHTTPRequestHandler):
         return
 
 
+class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+
+
 def start_http_server(kube):
     RoleProbeHandler.kube = kube
-    server = http.server.ThreadingHTTPServer((HTTP_LISTEN, HTTP_PORT), RoleProbeHandler)
+    server_cls = getattr(http.server, "ThreadingHTTPServer", ThreadingHTTPServer)
+    server = server_cls((HTTP_LISTEN, HTTP_PORT), RoleProbeHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     log(f"started role probe HTTP server on {HTTP_LISTEN}:{HTTP_PORT}")
