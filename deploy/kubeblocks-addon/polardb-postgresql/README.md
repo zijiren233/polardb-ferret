@@ -34,9 +34,10 @@ The first version keeps the existing script-based HA manager:
 - Failover candidates check replay lag and timeline before promotion.
 - PostgreSQL synchronous replication is enabled by default with
   `synchronous_commit=on` and `synchronous_standby_names='FIRST 1 (*)'`.
-- A demoted old primary defaults to `pg_rewind` based rejoin when it restarts.
-  Full basebackup rebuild is disabled by default and requires
-  `ha.rejoin.rebuildDemoted=true`.
+- Failover candidates must replay to the last WAL LSN recorded in the Lease by
+  default (`ha.maximumLagOnFailoverBytes=0`).
+- A demoted old primary preserves its PVC and stops by default. Full basebackup
+  rebuild is opt-in with `ha.rejoin.rebuildDemoted=true`.
 - `polardb-ha-manager.py` exposes `/v1.0/getrole` on port `5001`.
 - KubeBlocks `roleProbe` consumes that endpoint and owns role labels.
 - The primary Service uses `roleSelector: primary`.

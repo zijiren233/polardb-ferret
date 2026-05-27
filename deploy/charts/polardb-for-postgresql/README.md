@@ -60,9 +60,10 @@ healthy. In HA mode the StatefulSet uses `podManagementPolicy=Parallel` by
 default so standby pods can bootstrap without strict ordinal serialization. See
 `docs/high-availability.md` for operations and recovery details.
 
-After failover, a demoted old primary defaults to `pg_rewind` based rejoin when
-it restarts. Full basebackup rebuild of a demoted pod is disabled by default and
-requires `ha.rejoin.rebuildDemoted=true`.
+Failover candidates must replay to the last WAL LSN recorded in the Lease by
+default (`ha.failover.maximumLagOnFailoverBytes=0`). After failover, a demoted
+old primary preserves its PVC and stops by default. Full basebackup rebuild
+requires the explicit opt-in `ha.rejoin.rebuildDemoted=true`.
 
 HA mode uses `updateStrategy.type=OnDelete` by default. Helm upgrades change the
 StatefulSet template but do not automatically restart database pods; delete

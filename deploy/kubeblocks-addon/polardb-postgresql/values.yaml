@@ -20,7 +20,7 @@ ha:
   retryPeriodSeconds: 5
   primaryWaitSeconds: 600
   promoteTimeoutSeconds: 60
-  maximumLagOnFailoverBytes: "1048576"
+  maximumLagOnFailoverBytes: "0"
   checkTimeline: true
   replication:
     walKeepSize: 1024MB
@@ -31,7 +31,6 @@ ha:
       commit: "on"
       standbyNames: "FIRST 1 (*)"
   rejoin:
-    rewindDemoted: true
     rebuildDemoted: false
 
 roleProbe:

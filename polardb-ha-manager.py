@@ -67,7 +67,7 @@ def env_int(name, default):
         return int(decimal.Decimal(value))
 
 
-MAXIMUM_LAG_ON_FAILOVER = env_int("POLARDB_HA_MAXIMUM_LAG_ON_FAILOVER_BYTES", "1048576")
+MAXIMUM_LAG_ON_FAILOVER = env_int("POLARDB_HA_MAXIMUM_LAG_ON_FAILOVER_BYTES", "0")
 CHECK_TIMELINE = os.environ.get("POLARDB_HA_CHECK_TIMELINE", "1").lower() in (
     "1",
     "true",
