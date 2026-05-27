@@ -78,6 +78,8 @@ ha:
   enabled: true
   replicaCount: 3
   podManagementPolicy: Parallel
+  updateStrategy:
+    type: OnDelete
   leaseDurationSeconds: 30
   retryPeriodSeconds: 5
   primaryWaitSeconds: 600
@@ -105,6 +107,8 @@ ha:
 - `ha.podManagementPolicy`: HA 模式下 StatefulSet 的 Pod 管理策略，默认 `Parallel`。
   这样多个 standby 可以同时进入等待 primary、basebackup 和 recovery 流程。非 HA 模式默认
   使用 `polardb.podManagementPolicy=OrderedReady`。
+- `ha.updateStrategy`: HA 模式下 StatefulSet 更新策略，默认 `OnDelete`。这样 Helm 升级不会自动
+  滚动重启当前 primary；需要运维按 standby、primary 的顺序手动删除 Pod 推进升级。
 - `ha.leaseDurationSeconds`: Lease 超过该时间未续约后，standby 才能尝试接管。
 - `ha.retryPeriodSeconds`: HA sidecar 主循环周期。
 - `ha.primaryWaitSeconds`: standby 首次 clone 时等待初始 primary 的最长时间。
@@ -284,8 +288,9 @@ kubectl logs -n polardb <old-primary-pod> -c polardb
 Demoted primary was rewound and configured as standby
 ```
 
-4. 如果 rewind 失败，先保留 PVC，人工判断失败原因。常见原因包括 WAL 不足、当前 primary 不可达、
-   或 PolarDB shared data 目录无法被 rewind 覆盖。
+4. 如果 rewind 失败，入口脚本会写入 `/var/polardb/ha-rewind-failed` 并保留 PVC，后续重启不会
+   反复执行 rewind。人工判断失败原因后，可以删除该标记重试。常见原因包括 WAL 不足、当前
+   primary 不可达，或 PolarDB shared data 目录无法被标准 `pg_rewind` 覆盖。
 
 只有在确认可以接受全量重建该 Pod 本地数据时，才开启：
 
@@ -348,6 +353,7 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
 - 没有复制槽管理，standby 长时间落后后可能无法继续追 WAL。
 - 旧 primary 默认会尝试 `pg_rewind` 自动 rejoin，但还需要更多 PolarDB shared data 场景测试。
 - 没有安全 switchover，滚动维护时仍需要谨慎。
+- 直接 Helm HA 默认使用 `OnDelete` 更新策略，避免自动重启 primary；升级时需要人工控制顺序。
 - 默认同步复制降低数据丢失风险，但不能替代强 fencing；它也会在 standby 不可用时牺牲写入可用性。
 
 ## 后续优化清单

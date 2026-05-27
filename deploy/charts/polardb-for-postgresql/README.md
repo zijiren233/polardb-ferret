@@ -63,3 +63,8 @@ default so standby pods can bootstrap without strict ordinal serialization. See
 After failover, a demoted old primary defaults to `pg_rewind` based rejoin when
 it restarts. Full basebackup rebuild of a demoted pod is disabled by default and
 requires `ha.rejoin.rebuildDemoted=true`.
+
+HA mode uses `updateStrategy.type=OnDelete` by default. Helm upgrades change the
+StatefulSet template but do not automatically restart database pods; delete
+standby pods first, then handle the primary through a controlled switchover or
+maintenance window.

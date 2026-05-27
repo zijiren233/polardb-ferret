@@ -8,6 +8,7 @@ SHARED=$DATA_ROOT/shared_datadir
 PORT=${POLARDB_PORT:-5432}
 INIT_MARKER="$PRIMARY/PG_VERSION"
 HA_DEMOTED_MARKER="$DATA_ROOT/ha-demoted"
+HA_REWIND_FAILED_MARKER="$DATA_ROOT/ha-rewind-failed"
 
 run_as_postgres() {
     if [ "$(id -u)" = "0" ]; then
@@ -337,6 +338,11 @@ rewind_ha_standby() {
     host="$(ha_rejoin_primary_host)"
 
     verify_minimum_env
+    if [ -f "$HA_REWIND_FAILED_MARKER" ]; then
+        echo "Previous pg_rewind attempt failed; data is preserved at $DATA_ROOT" >&2
+        echo "Remove $HA_REWIND_FAILED_MARKER to retry, or set POLARDB_HA_REBUILD_DEMOTED=1 to allow full rebuild." >&2
+        return 1
+    fi
     if [ -z "$host" ]; then
         echo "POLARDB_HA_REJOIN_PRIMARY_HOST or POLARDB_HA_PRIMARY_HOST is required for pg_rewind" >&2
         return 1
@@ -355,6 +361,7 @@ rewind_ha_standby() {
         --source-server="$source_server" \
         --progress; then
         echo "pg_rewind failed; data is preserved at $DATA_ROOT" >&2
+        date -u +"%Y-%m-%dT%H:%M:%SZ" > "$HA_REWIND_FAILED_MARKER"
         return 1
     fi
 
@@ -365,13 +372,13 @@ rewind_ha_standby() {
     fi
     POLARDB_HA_BOOTSTRAP_PRIMARY_HOST="$host" append_ha_primary_config
     POLARDB_HA_BOOTSTRAP_PRIMARY_HOST="$host" configure_standby_recovery
-    rm -f "$HA_DEMOTED_MARKER"
+    rm -f "$HA_DEMOTED_MARKER" "$HA_REWIND_FAILED_MARKER"
     echo "Demoted primary was rewound and configured as standby"
 }
 
 rebuild_ha_standby_from_current_primary() {
     echo "Rebuilding this pod as standby from the current primary"
-    rm -f "$HA_DEMOTED_MARKER"
+    rm -f "$HA_DEMOTED_MARKER" "$HA_REWIND_FAILED_MARKER"
     POLARDB_HA_BOOTSTRAP_PRIMARY_HOST="$(ha_rejoin_primary_host)" initialize_ha_standby
 }
 

@@ -19,7 +19,7 @@ spec:
     matchLabels:
       {{- include "polardb-for-postgresql.polardbSelectorLabels" . | nindent 6 }}
   updateStrategy:
-    {{- toYaml .Values.polardb.updateStrategy | nindent 4 }}
+    {{- toYaml (ternary .Values.ha.updateStrategy .Values.polardb.updateStrategy .Values.ha.enabled) | nindent 4 }}
   {{- if and .Values.polardb.persistence.enabled .Values.polardb.persistence.persistentVolumeClaimRetentionPolicy.enabled }}
   persistentVolumeClaimRetentionPolicy:
     whenDeleted: {{ .Values.polardb.persistence.persistentVolumeClaimRetentionPolicy.whenDeleted }}

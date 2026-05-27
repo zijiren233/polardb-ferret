@@ -79,6 +79,8 @@ ha:
   retryPeriodSeconds: 5
   primaryWaitSeconds: 600
   podManagementPolicy: Parallel
+  updateStrategy:
+    type: OnDelete
   shareProcessNamespace: true
   failover:
     enabled: true

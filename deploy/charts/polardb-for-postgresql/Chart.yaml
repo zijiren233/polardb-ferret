@@ -2,7 +2,7 @@ apiVersion: v2
 name: polardb-for-postgresql
 description: PolarDB for PostgreSQL with optional DocumentDB and FerretDB MongoDB mode
 type: application
-version: 0.1.3
+version: 0.1.4
 appVersion: "latest"
 keywords:
   - polardb
