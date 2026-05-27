@@ -74,7 +74,7 @@ CHECK_TIMELINE = os.environ.get("POLARDB_HA_CHECK_TIMELINE", "1").lower() in (
     "yes",
     "on",
 )
-FAILOVER_ENABLED = os.environ.get("POLARDB_HA_FAILOVER_ENABLED", "1").lower() in (
+FAILOVER_ENABLED = os.environ.get("POLARDB_HA_FAILOVER_ENABLED", "0").lower() in (
     "1",
     "true",
     "yes",

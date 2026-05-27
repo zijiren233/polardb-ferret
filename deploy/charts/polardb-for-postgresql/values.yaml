@@ -83,7 +83,7 @@ ha:
     type: OnDelete
   shareProcessNamespace: true
   failover:
-    enabled: true
+    enabled: false
     promoteTimeoutSeconds: 60
     maximumLagOnFailoverBytes: "0"
     checkTimeline: true

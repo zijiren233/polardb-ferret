@@ -268,7 +268,7 @@ spec:
           - name: POLARDB_HA_RETRY_PERIOD_SECONDS
             value: {{ .Values.ha.retryPeriodSeconds | quote }}
           - name: POLARDB_HA_FAILOVER_ENABLED
-            value: "1"
+            value: {{ ternary "1" "0" .Values.ha.failover.enabled | quote }}
           - name: POLARDB_HA_PROMOTE_TIMEOUT_SECONDS
             value: {{ .Values.ha.promoteTimeoutSeconds | quote }}
           - name: POLARDB_HA_MAXIMUM_LAG_ON_FAILOVER_BYTES

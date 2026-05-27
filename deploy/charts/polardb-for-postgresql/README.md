@@ -53,17 +53,21 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
   --set ha.replicaCount=3
 ```
 
-HA mode defaults to PostgreSQL synchronous replication with
+HA mode defaults to manual failover (`ha.failover.enabled=false`) and
+PostgreSQL synchronous replication with
 `synchronous_commit=on` and `synchronous_standby_names='FIRST 1 (*)'`. This
-reduces data-loss risk during failover, but writes can wait when no standby is
-healthy. In HA mode the StatefulSet uses `podManagementPolicy=Parallel` by
-default so standby pods can bootstrap without strict ordinal serialization. See
-`docs/high-availability.md` for operations and recovery details.
+keeps replication, Lease tracking, service roles, and old-primary fencing active
+without automatically promoting a standby when the primary fails. Writes can
+wait when no standby is healthy. In HA mode the StatefulSet uses
+`podManagementPolicy=Parallel` by default so standby pods can bootstrap without
+strict ordinal serialization. See `docs/high-availability.md` for operations
+and recovery details.
 
-Failover candidates must replay to the last WAL LSN recorded in the Lease by
-default (`ha.failover.maximumLagOnFailoverBytes=0`). After failover, a demoted
-old primary preserves its PVC and stops by default. Full basebackup rebuild
-requires the explicit opt-in `ha.rejoin.rebuildDemoted=true`.
+If automatic failover is explicitly enabled, candidates must replay to the last
+WAL LSN recorded in the Lease by default
+(`ha.failover.maximumLagOnFailoverBytes=0`). After failover, a demoted old
+primary preserves its PVC and stops by default. Full basebackup rebuild requires
+the explicit opt-in `ha.rejoin.rebuildDemoted=true`.
 
 HA mode uses `updateStrategy.type=OnDelete` by default. Helm upgrades change the
 StatefulSet template but do not automatically restart database pods; delete

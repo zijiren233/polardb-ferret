@@ -16,6 +16,8 @@ versions:
 
 ha:
   enabled: true
+  failover:
+    enabled: false
   leaseDurationSeconds: 30
   retryPeriodSeconds: 5
   primaryWaitSeconds: 600

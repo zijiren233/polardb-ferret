@@ -31,11 +31,13 @@ The first version keeps the existing script-based HA manager:
 
 - Kubernetes `Lease` elects the writable primary.
 - The primary records WAL LSN and timeline in Lease annotations.
-- Failover candidates check replay lag and timeline before promotion.
+- Automatic failover is disabled by default (`ha.failover.enabled=false`).
+- If automatic failover is explicitly enabled, candidates check replay lag and
+  timeline before promotion.
 - PostgreSQL synchronous replication is enabled by default with
   `synchronous_commit=on` and `synchronous_standby_names='FIRST 1 (*)'`.
-- Failover candidates must replay to the last WAL LSN recorded in the Lease by
-  default (`ha.maximumLagOnFailoverBytes=0`).
+- Automatic failover candidates must replay to the last WAL LSN recorded in the
+  Lease by default (`ha.maximumLagOnFailoverBytes=0`).
 - A demoted old primary preserves its PVC and stops by default. Full basebackup
   rebuild is opt-in with `ha.rejoin.rebuildDemoted=true`.
 - `polardb-ha-manager.py` exposes `/v1.0/getrole` on port `5001`.

@@ -16,7 +16,8 @@ Helm/StatefulSet 部署模式的日常操作、故障处理和维护判断。
 - 只读 Service 通过 `polardb-role=standby` 选择 standby。
 
 这不是完整 operator，也不是 Patroni 级别的生产 HA。它的目标是先提供一个可部署、
-可故障切换、可人工恢复的主从高可用闭环。
+可人工恢复的主从高可用闭环。默认不开启自动故障切换；需要业务明确接受自动 promote 的
+RPO/RTO 取舍后再打开。
 
 ## 当前实现状态
 
@@ -29,9 +30,12 @@ Helm/StatefulSet 部署模式的日常操作、故障处理和维护判断。
 - standby 通过 `polar_basebackup --polardata` 初始化。
 - 默认开启 PostgreSQL 同步复制：`synchronous_commit=on`，
   `synchronous_standby_names='FIRST 1 (*)'`。
-- Lease 过期后，健康 standby 只有在 timeline 检查通过且 replay lag 不超过阈值时，
+- 默认不自动故障切换。Lease 过期后 standby 继续保持 standby，不会自动执行
+  `pg_ctl promote`。
+- 显式开启自动 failover 后，健康 standby 只有在 timeline 检查通过且 replay lag 不超过阈值时，
   才能抢占 Lease 并执行 `pg_ctl promote`。
-- 默认要求 standby 已 replay 到 Lease 记录的最后 primary WAL LSN，才允许自动 failover。
+- 自动 failover 开启后，默认仍要求 standby 已 replay 到 Lease 记录的最后 primary WAL LSN，
+  才允许接管。
 - 本地 PostgreSQL 是 primary 但 Pod 不持有 Lease 时，sidecar 会停止本地数据库。
 - 被 fencing 的旧 primary 会写入 `/var/polardb/ha-demoted`，避免重启后直接双主。
 - demoted 旧 primary 默认保留 PVC 并停住，等待人工 rejoin 或显式重建。
@@ -86,7 +90,7 @@ ha:
   retryPeriodSeconds: 5
   primaryWaitSeconds: 600
   failover:
-    enabled: true
+    enabled: false
     promoteTimeoutSeconds: 60
     maximumLagOnFailoverBytes: 0
     checkTimeline: true
@@ -113,7 +117,8 @@ ha:
 - `ha.leaseDurationSeconds`: Lease 超过该时间未续约后，standby 才能尝试接管。
 - `ha.retryPeriodSeconds`: HA sidecar 主循环周期。
 - `ha.primaryWaitSeconds`: standby 首次 clone 时等待初始 primary 的最长时间。
-- `ha.failover.enabled`: 是否允许自动故障切换。
+- `ha.failover.enabled`: 是否允许自动故障切换。默认 `false`，也就是只维护复制、Lease、Service
+  role 和旧主 fencing，不在 primary 故障时自动 promote standby。
 - `ha.failover.promoteTimeoutSeconds`: `pg_ctl promote` 等待超时时间。
 - `ha.failover.maximumLagOnFailoverBytes`: standby replay LSN 落后 Lease 中最后 primary LSN 的最大允许字节数。
   默认 `0`，表示 standby 必须 replay 到 Lease 最后一次记录的 primary WAL LSN 才允许自动接管。
@@ -215,9 +220,12 @@ kubectl exec -n polardb <primary-pod> -c polardb -- \
   "show synchronous_commit; show synchronous_standby_names; select application_name,sync_state,state,replay_lsn from pg_stat_replication;"
 ```
 
-## 故障切换流程
+## 自动故障切换流程
 
-当当前 primary Pod 宕机、PostgreSQL 不可用，或者 `ha-manager` 无法续约 Lease：
+默认 `ha.failover.enabled=false`，因此当前 primary Pod 宕机、PostgreSQL 不可用，或者
+`ha-manager` 无法续约 Lease 时，standby 不会自动 promote，业务写入会不可用，需要人工处理。
+
+只有显式设置 `ha.failover.enabled=true` 后，下面的自动故障切换流程才会发生：
 
 1. Lease 超过 `ha.leaseDurationSeconds` 后被视为过期。
 2. 某个健康 standby 观察到 Lease 过期。
@@ -231,6 +239,30 @@ kubectl exec -n polardb <primary-pod> -c polardb -- \
 10. 新 primary 会清理其它 Pod 上残留的 `polardb-role=primary` label。
 11. primary Service 自动切到新 primary。
 12. 其它 standby 会改写 `primary_conninfo`，开始跟随新的 Lease holder。
+
+开启自动故障切换：
+
+```bash
+helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
+  -n polardb \
+  --set ha.enabled=true \
+  --set ha.failover.enabled=true
+```
+
+KubeBlocks addon 也提供同名开关，默认关闭：
+
+```yaml
+ha:
+  failover:
+    enabled: false
+```
+
+开启自动切换前至少确认：
+
+1. 业务能接受自动 promote 带来的旧主隔离和人工 rejoin 流程。
+2. 默认同步复制满足业务写入可用性要求。
+3. `ha.failover.maximumLagOnFailoverBytes=0` 没有被放宽，除非业务明确接受 RPO。
+4. 已演练旧 primary 被 demote 后的保留、排查和全量重建流程。
 
 ## 旧 primary fencing
 
@@ -271,7 +303,7 @@ PolarDB 的受控切换测试里存在“旧主改成 standby”的流程，但�
 shared storage 中的 `pg_control` 复制到本地，这不等于 `pg_rewind` 工具本身支持完整 PolarDB
 目录布局。因此这个模式从脚本 HA 中删除，避免提供一个实际不可靠的恢复选项。
 
-建议按下面流程确认：
+建议按下面流程手动处理：
 
 1. 确认集群已有健康 primary：
 
@@ -287,7 +319,7 @@ kubectl exec -n polardb <primary-pod> -c polardb -- \
   psql -U postgres -d postgres -c "create table if not exists ha_rejoin_check(id int);"
 ```
 
-3. 旧 primary 日志默认应显示保留数据并退出：
+3. 确认旧 primary 已被保护性停住：
 
 ```bash
 kubectl logs -n polardb <old-primary-pod> -c polardb
@@ -300,7 +332,10 @@ This pod was demoted and requires manual rejoin or rebuild
 Data is preserved at /var/polardb.
 ```
 
-4. 只有在确认可以接受全量重建该 Pod 本地数据时，才开启：
+4. 如果需要保留旧 primary 现场进行排查，不要删除 PVC，也不要开启
+   `ha.rejoin.rebuildDemoted`。可以把 PVC 快照、备份或挂载到独立环境做人工比对。
+
+5. 只有在确认可以接受全量重建该 Pod 本地数据时，才开启：
 
 ```bash
 helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
@@ -309,13 +344,28 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
   --set ha.rejoin.rebuildDemoted=true
 ```
 
+6. 由于 HA StatefulSet 默认 `OnDelete`，删除旧 primary Pod 触发重新启动：
+
+```bash
+kubectl delete pod -n polardb <old-primary-pod>
+```
+
 全量重建会清理旧 primary 的本地数据并从当前 primary 重新 clone。如果同步复制曾被关闭，或者旧
 primary 上存在没有同步到新 primary 的已提交事务，这些事务会丢失，因此不要在无法确认新 primary
 健康和可接受 RPO 时执行该操作。
 
-## 暂停自动故障切换
+7. 旧 primary 成功作为 standby 回来后，建议关闭全量重建开关，避免后续误操作：
 
-维护期间可以关闭自动 failover：
+```bash
+helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
+  -n polardb \
+  --set ha.enabled=true \
+  --set ha.rejoin.rebuildDemoted=false
+```
+
+## 自动故障切换开关
+
+默认已经关闭自动 failover：
 
 ```bash
 helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
@@ -327,10 +377,12 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
 关闭后：
 
 - 当前 primary 仍会续约 Lease。
+- standby 仍会跟随当前 primary。
+- Service role 仍会维护。
 - standby 不会在 Lease 过期后自动 promote。
 - 如果 primary 故障，业务可能不可写，需要人工恢复。
 
-维护完成后重新开启：
+需要自动切换时显式开启：
 
 ```bash
 helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
