@@ -273,6 +273,8 @@ spec:
             value: {{ .Values.ha.maximumLagOnFailoverBytes | quote }}
           - name: POLARDB_HA_CHECK_TIMELINE
             value: {{ ternary "1" "0" .Values.ha.checkTimeline | quote }}
+          - name: POLARDB_HA_PRIMARY_HEADLESS_TEMPLATE
+            value: "$(POD_NAME).$(CLUSTER_COMPONENT_NAME)-headless.$(CLUSTER_NAMESPACE).svc.cluster.local"
           - name: POLARDB_HA_PATCH_POD_ROLE
             value: "0"
           - name: POLARDB_HA_PRIMARY_ROLE_VALUE
