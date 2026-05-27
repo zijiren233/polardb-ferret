@@ -252,6 +252,12 @@ def run(cmd, check=False, timeout=10):
     return result
 
 
+def run_as_postgres(cmd, check=False, timeout=10):
+    if os.geteuid() == 0:
+        cmd = ["runuser", "-u", "postgres", "--"] + cmd
+    return run(cmd, check=check, timeout=timeout)
+
+
 def db_ready():
     result = run(
         [os.path.join(BASE, "bin/pg_isready"), "-h", "127.0.0.1", "-p", PORT, "-U", DB_USER, "-d", "postgres", "-q"],
@@ -285,7 +291,7 @@ def in_recovery():
 
 def promote():
     log("promoting local standby")
-    run(
+    run_as_postgres(
         [
             os.path.join(BASE, "bin/pg_ctl"),
             "-D",
@@ -397,7 +403,7 @@ def stop_local_primary():
     log("local postgres is primary but this pod does not hold the lease; stopping it")
     with open(DEMOTED_MARKER, "w", encoding="utf-8") as marker:
         marker.write(kube_timestamp() + "\n")
-    run(
+    run_as_postgres(
         [
             os.path.join(BASE, "bin/pg_ctl"),
             "-D",
