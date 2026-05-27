@@ -167,6 +167,75 @@ mongosh "mongodb://postgres:${POLARDB_PASSWORD}@localhost:27017/ferretdb_test?au
 
 已有 PVC 后续从默认 PostgreSQL 模式升级到 `ferretdb.enabled=true` 时，PolarDB Pod 重启会自动补齐 DocumentDB 配置并创建扩展。
 
+### Kubernetes HA 模式
+
+这个仓库内置了一个轻量级 HA 组件，默认关闭。它不是完整 operator，而是部署在
+StatefulSet 里的 sidecar 脚本，目标是先提供类似 PostgreSQL/MySQL/Redis 常见
+主从高可用的最小可用闭环：
+
+- 每个 PolarDB Pod 使用独立 RWO PVC。
+- `polardb-0` 首次初始化为 primary，其它 Pod 通过 `polar_basebackup --polardata`
+  从 primary 克隆成本地 standby。
+- HA sidecar 使用 Kubernetes `Lease` 做主节点仲裁，借鉴 Patroni/Stolon 这类
+  PostgreSQL HA 项目的 DCS 思路。
+- 主库 Service 只选择带 `polardb-role=primary` 的 Pod；可选 replica Service
+  只选择 `polardb-role=standby` 的 Pod。
+- Lease 过期且本地 standby 健康时，sidecar 执行 `pg_ctl promote` 并接管主库
+  Service。
+- 如果某个 Pod 本地 PostgreSQL 是 primary 但它不持有 Lease，sidecar 会停止本地
+  PostgreSQL，并写入 `/var/polardb/ha-demoted`，避免旧主库重启后形成双主。
+- 新 primary 设置角色前会清理其它 Pod 残留的 `polardb-role=primary` label。
+
+完整 HA 设计、部署、故障切换、旧主恢复和维护流程见
+[`docs/high-availability.md`](docs/high-availability.md)。
+
+启用示例：
+
+```bash
+helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
+  -n polardb --create-namespace \
+  --set auth.password=change-me \
+  --set ha.enabled=true \
+  --set ha.replicaCount=3
+```
+
+主库连接入口仍然是：
+
+```text
+polardb-for-postgresql-polardb:5432
+```
+
+只读 standby 入口默认是：
+
+```text
+polardb-for-postgresql-polardb-replica:5432
+```
+
+常用观察命令：
+
+```bash
+kubectl get pod -n polardb -l app.kubernetes.io/component=polardb --show-labels
+kubectl get lease -n polardb
+kubectl logs -n polardb statefulset/polardb-for-postgresql-polardb -c ha-manager
+```
+
+旧主库被 fencing 后不会自动清空 PVC 重新加入。确认集群已有新 primary 后，可以临时设置
+`POLARDB_HA_REJOIN=1` 让该 Pod 删除本地数据并重新从当前主库克隆；生产环境建议把这个动作
+封装成受控运维流程，而不是完全自动执行。
+
+边界说明：
+
+- 这是脚本版 HA，不是生产级 operator；还需要补充分区、节点宕机、长时间复制延迟、PVC
+  损坏、Kubernetes API 抖动、旧主库回归等场景的系统测试。
+- 当前实现走 standby 流复制模式，不要求 RWX/PFS 共享盘。PolarDB 源码里的 RO/replica
+  共享存储模式和这里的独立 PVC standby 模式不是同一种部署模型。
+- 复制槽默认未绑定到 standby，主要依赖 `wal_keep_size` 降低 failover 后新主库缺少旧 slot
+  的复杂度；如果要做生产级数据保护，需要继续实现 slot 同步/重建、复制延迟阈值和更严格的
+  promotion 前检查。
+- 设计原则参考了 Patroni/Stolon 的 DCS/keeper 模型、Redis Sentinel 的故障仲裁和
+  MySQL Orchestrator 的拓扑恢复思路，但这里为了贴合当前镜像和 Helm chart，先落为
+  Kubernetes Lease + sidecar 的最小实现。
+
 ## 使用 Sealos Cluster Image
 
 发布 workflow 会基于 `deploy/Kubefile` 构建多架构 cluster image，并在镜像名后追加 `-cluster`。例如仓库为 `labring-sigs/PolarDB-for-PostgreSQL` 时，默认 GHCR cluster image 为：

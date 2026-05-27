@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environment
+.env
+.env.*
+!.env.example
+*.local
+
+# Logs
+*.log
+logs/
+
+# Docker and build outputs
+*.tar
+*.tar.gz
+*.tgz
+*.rpm
+*.deb
+build/
+dist/
+out/
+tmp/
+cache/
+
+# Helm and Kubernetes local outputs
+*.tgz
+rendered*.yaml
+manifest*.yaml
+kubeconfig*
+*.kubeconfig
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

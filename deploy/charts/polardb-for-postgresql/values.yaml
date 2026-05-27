@@ -15,6 +15,7 @@ polardb:
   image: ghcr.io/labring-sigs/polardb-for-postgresql:latest
   imagePullPolicy: IfNotPresent
   port: 5432
+  replicaCount: 1
 
   annotations: {}
   labels: {}
@@ -68,6 +69,40 @@ polardb:
   extraEnv: []
   extraVolumeMounts: []
   extraVolumes: []
+
+ha:
+  enabled: false
+  replicaCount: 3
+  leaseName: ""
+  leaseDurationSeconds: 30
+  retryPeriodSeconds: 5
+  primaryWaitSeconds: 600
+  shareProcessNamespace: true
+  failover:
+    enabled: true
+    promoteTimeoutSeconds: 60
+  replication:
+    walKeepSize: 1024MB
+    maxWalSenders: 10
+    maxReplicationSlots: 10
+  service:
+    replica:
+      enabled: true
+      type: ClusterIP
+      annotations: {}
+  manager:
+    httpPort: 5001
+    livenessProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 6
+    readinessProbe:
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 3
+      failureThreshold: 6
+    resources: {}
 
 ferretdb:
   enabled: false

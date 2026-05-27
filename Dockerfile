@@ -195,6 +195,7 @@ RUN --mount=type=cache,target=/var/cache/dnf,sharing=locked \
     ca-certificates \
     json-c \
     libxml2 \
+    python3 \
     proj \
     && rpm -ivh /tmp/PolarDB-*.rpm \
     && ln -sfn "/u01/polardb_pg_${POLARDB_MAJOR}" /u01/polardb_pg \
@@ -218,6 +219,7 @@ RUN --mount=type=bind,from=documentdb-builder,source=/usr/local/lib64,target=/tm
     && test -f /u01/polardb_pg/share/postgresql/extension/rum.control
 
 COPY --chown=postgres:postgres --chmod=0755 docker-entrypoint.sh /home/postgres/docker-entrypoint.sh
+COPY --chown=postgres:postgres --chmod=0755 polardb-ha-manager.py /home/postgres/polardb-ha-manager.py
 
 ENV PATH=/u01/polardb_pg/bin:$PATH
 ENV PGHOST=127.0.0.1

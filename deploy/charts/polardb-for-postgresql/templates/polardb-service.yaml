@@ -20,6 +20,9 @@ spec:
       protocol: TCP
   selector:
     {{- include "polardb-for-postgresql.polardbSelectorLabels" . | nindent 4 }}
+    {{- if .Values.ha.enabled }}
+    polardb-role: primary
+    {{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -36,3 +39,26 @@ spec:
       protocol: TCP
   selector:
     {{- include "polardb-for-postgresql.polardbSelectorLabels" . | nindent 4 }}
+---
+{{- if and .Values.ha.enabled .Values.ha.service.replica.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "polardb-for-postgresql.polardbReplicaServiceName" . }}
+  labels:
+    {{- include "polardb-for-postgresql.polardbLabels" . | nindent 4 }}
+  {{- with .Values.ha.service.replica.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.ha.service.replica.type }}
+  ports:
+    - name: postgres
+      port: {{ .Values.polardb.port }}
+      targetPort: postgres
+      protocol: TCP
+  selector:
+    {{- include "polardb-for-postgresql.polardbSelectorLabels" . | nindent 4 }}
+    polardb-role: standby
+{{- end }}

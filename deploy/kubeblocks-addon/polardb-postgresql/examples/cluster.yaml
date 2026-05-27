@@ -1,0 +1,28 @@
+apiVersion: apps.kubeblocks.io/v1
+kind: Cluster
+metadata:
+  name: polardb-demo
+  namespace: demo
+spec:
+  terminationPolicy: Delete
+  componentSpecs:
+    - name: polardb
+      componentDef: polardb-postgresql-17
+      serviceVersion: "17.9.1"
+      replicas: 3
+      disableExporter: true
+      resources:
+        requests:
+          cpu: "1"
+          memory: "2Gi"
+        limits:
+          cpu: "2"
+          memory: "4Gi"
+      volumeClaimTemplates:
+        - name: data
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 20Gi

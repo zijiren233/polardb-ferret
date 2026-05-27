@@ -1,0 +1,291 @@
+apiVersion: apps.kubeblocks.io/v1
+kind: ComponentDefinition
+metadata:
+  name: {{ include "polardb-postgresql.cmpdName" . }}
+  labels:
+    {{- include "polardb-postgresql.labels" . | nindent 4 }}
+  annotations:
+    {{- include "polardb-postgresql.annotations" . | nindent 4 }}
+spec:
+  provider: labring-sigs
+  description: PolarDB for PostgreSQL 17 with DocumentDB runtime and script-based HA.
+  serviceKind: polardb-postgresql
+  serviceVersion: {{ (index .Values.versions 0).serviceVersion | quote }}
+  updateStrategy: BestEffortParallel
+  podManagementPolicy: Parallel
+  services:
+    - name: primary
+      serviceName: primary
+      spec:
+        ports:
+          - name: tcp-postgresql
+            port: {{ .Values.service.port }}
+            targetPort: tcp-postgresql
+      roleSelector: primary
+    - name: replicas
+      serviceName: replicas
+      spec:
+        ports:
+          - name: tcp-postgresql
+            port: {{ .Values.service.port }}
+            targetPort: tcp-postgresql
+      roleSelector: standby
+  volumes:
+    - name: data
+      needSnapshot: true
+  roles:
+    - name: primary
+      updatePriority: 2
+      participatesInQuorum: false
+      isExclusive: true
+    - name: standby
+      updatePriority: 1
+      participatesInQuorum: false
+  logConfigs:
+    {{- range $name, $pattern := .Values.logConfigs }}
+    - name: {{ $name }}
+      filePathPattern: {{ $pattern }}
+    {{- end }}
+  scripts:
+    - name: polardb-postgresql-scripts
+      template: {{ include "polardb-postgresql.scriptsTplName" . }}
+      namespace: {{ .Release.Namespace }}
+      volumeName: scripts
+      defaultMode: 0555
+  vars:
+    - name: CLUSTER_NAME
+      valueFrom:
+        clusterVarRef:
+          clusterName: Required
+    - name: CLUSTER_NAMESPACE
+      valueFrom:
+        clusterVarRef:
+          namespace: Required
+    - name: CLUSTER_UID
+      valueFrom:
+        clusterVarRef:
+          clusterUID: Required
+    - name: COMPONENT_NAME
+      valueFrom:
+        componentVarRef:
+          optional: false
+          shortName: Required
+    - name: CLUSTER_COMPONENT_NAME
+      valueFrom:
+        componentVarRef:
+          optional: false
+          componentName: Required
+    - name: POLARDB_POD_NAME_LIST
+      valueFrom:
+        componentVarRef:
+          optional: false
+          podNames: Required
+    - name: POLARDB_POD_FQDN_LIST
+      valueFrom:
+        componentVarRef:
+          optional: false
+          podFQDNs: Required
+    - name: POLARDB_USER
+      valueFrom:
+        credentialVarRef:
+          name: postgres
+          optional: false
+          username: Required
+    - name: POLARDB_PASSWORD
+      valueFrom:
+        credentialVarRef:
+          name: postgres
+          optional: false
+          password: Required
+  systemAccounts:
+    - name: postgres
+      initAccount: true
+      passwordGenerationPolicy:
+        length: 16
+        numDigits: 6
+        numSymbols: 0
+        letterCase: MixedCases
+    - name: kbadmin
+      statement:
+        create: CREATE USER ${KB_ACCOUNT_NAME} SUPERUSER PASSWORD '${KB_ACCOUNT_PASSWORD}';
+      passwordGenerationPolicy:
+        length: 16
+        numDigits: 6
+        numSymbols: 0
+        letterCase: MixedCases
+  lifecycleActions:
+    roleProbe:
+      periodSeconds: {{ .Values.roleProbe.periodSeconds }}
+      timeoutSeconds: {{ .Values.roleProbe.timeoutSeconds }}
+      http:
+        port: "5001"
+        path: "/v1.0/getrole"
+    accountProvision:
+      exec:
+        container: polardb
+        command:
+          - bash
+          - -c
+          - |
+            eval statement=\"${KB_ACCOUNT_STATEMENT}\"
+            PGPASSWORD="${POLARDB_PASSWORD}" psql -h 127.0.0.1 -p "${POLARDB_PORT:-5432}" -U "${POLARDB_USER:-postgres}" -d postgres -v ON_ERROR_STOP=1 -c "${statement}"
+        targetPodSelector: Role
+        matchingKey: primary
+    switchover:
+      exec:
+        container: polardb
+        command:
+          - /kb-scripts/polardb-switchover.sh
+  policyRules:
+    - apiGroups:
+        - coordination.k8s.io
+      resources:
+        - leases
+      verbs:
+        - get
+        - create
+        - update
+        - patch
+        - list
+        - watch
+    - apiGroups:
+        - ""
+      resources:
+        - pods
+      verbs:
+        - get
+        - list
+        - patch
+        - watch
+  runtime:
+    shareProcessNamespace: true
+    securityContext:
+      runAsUser: 0
+      runAsGroup: 0
+      fsGroup: 0
+      fsGroupChangePolicy: OnRootMismatch
+    containers:
+      - name: polardb
+        image: {{ include "polardb-postgresql.image" . | quote }}
+        imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+        command:
+          - /kb-scripts/polardb-kb-entrypoint.sh
+        ports:
+          - name: tcp-postgresql
+            containerPort: {{ .Values.service.port }}
+        env:
+          - name: POLARDB_PORT
+            value: {{ .Values.service.port | quote }}
+          - name: POLARDB_DATA_DIR
+            value: /var/polardb
+          - name: POLARDB_ENABLE_DOCUMENTDB
+            value: "1"
+          - name: POLARDB_HA_ENABLED
+            value: {{ ternary "1" "0" .Values.ha.enabled | quote }}
+          - name: POLARDB_HA_PRIMARY_WAIT_SECONDS
+            value: {{ .Values.ha.primaryWaitSeconds | quote }}
+          - name: POLARDB_HA_WAL_KEEP_SIZE
+            value: {{ .Values.ha.replication.walKeepSize | quote }}
+          - name: POLARDB_HA_MAX_WAL_SENDERS
+            value: {{ .Values.ha.replication.maxWalSenders | quote }}
+          - name: POLARDB_HA_MAX_REPLICATION_SLOTS
+            value: {{ .Values.ha.replication.maxReplicationSlots | quote }}
+          - name: CURRENT_POD_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            value: $(CLUSTER_NAMESPACE)
+        readinessProbe:
+          exec:
+            command:
+              - /bin/bash
+              - -ec
+              - pg_isready -h 127.0.0.1 -U "${POLARDB_USER:-postgres}" -p "${POLARDB_PORT:-5432}" -d postgres -q
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 12
+        livenessProbe:
+          exec:
+            command:
+              - /bin/bash
+              - -ec
+              - pg_isready -h 127.0.0.1 -U "${POLARDB_USER:-postgres}" -p "${POLARDB_PORT:-5432}" -d postgres -q
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /var/polardb
+          - name: scripts
+            mountPath: /kb-scripts
+      - name: ha-manager
+        image: {{ include "polardb-postgresql.image" . | quote }}
+        imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+        command:
+          - /usr/bin/python3
+          - /home/postgres/polardb-ha-manager.py
+        ports:
+          - name: ha-http
+            containerPort: 5001
+        env:
+          - name: POLARDB_PORT
+            value: {{ .Values.service.port | quote }}
+          - name: POLARDB_DATA_DIR
+            value: /var/polardb
+          - name: POLARDB_HA_LEASE_NAME
+            value: "$(CLUSTER_COMPONENT_NAME)-primary"
+          - name: POLARDB_HA_LEASE_DURATION_SECONDS
+            value: {{ .Values.ha.leaseDurationSeconds | quote }}
+          - name: POLARDB_HA_RETRY_PERIOD_SECONDS
+            value: {{ .Values.ha.retryPeriodSeconds | quote }}
+          - name: POLARDB_HA_FAILOVER_ENABLED
+            value: "1"
+          - name: POLARDB_HA_PROMOTE_TIMEOUT_SECONDS
+            value: {{ .Values.ha.promoteTimeoutSeconds | quote }}
+          - name: POLARDB_HA_PATCH_POD_ROLE
+            value: "0"
+          - name: POLARDB_HA_PRIMARY_ROLE_VALUE
+            value: primary
+          - name: POLARDB_HA_STANDBY_ROLE_VALUE
+            value: standby
+          - name: POLARDB_HA_UNKNOWN_ROLE_VALUE
+            value: unknown
+          - name: POLARDB_HA_HTTP_PORT
+            value: "5001"
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
+          - name: POD_NAMESPACE
+            value: $(CLUSTER_NAMESPACE)
+        livenessProbe:
+          httpGet:
+            port: ha-http
+            path: /healthz
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 6
+        readinessProbe:
+          httpGet:
+            port: ha-http
+            path: /healthz
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 6
+        volumeMounts:
+          - name: data
+            mountPath: /var/polardb
+          - name: scripts
+            mountPath: /kb-scripts

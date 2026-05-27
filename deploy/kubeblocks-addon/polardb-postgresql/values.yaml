@@ -1,0 +1,33 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  registry: ghcr.io
+  repository: labring-sigs/polardb-for-postgresql
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  port: 5432
+
+versions:
+  - name: "17.9.1"
+    serviceVersion: "17.9.1"
+
+ha:
+  enabled: true
+  leaseDurationSeconds: 30
+  retryPeriodSeconds: 5
+  primaryWaitSeconds: 600
+  promoteTimeoutSeconds: 60
+  replication:
+    walKeepSize: 1024MB
+    maxWalSenders: 10
+    maxReplicationSlots: 10
+
+roleProbe:
+  periodSeconds: 2
+  timeoutSeconds: 1
+
+logConfigs:
+  running: /var/polardb/primary_datadir/log/*

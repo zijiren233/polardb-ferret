@@ -1,0 +1,27 @@
+apiVersion: apps.kubeblocks.io/v1
+kind: ComponentVersion
+metadata:
+  name: polardb-postgresql
+  labels:
+    {{- include "polardb-postgresql.labels" . | nindent 4 }}
+  annotations:
+    {{- include "polardb-postgresql.annotations" . | nindent 4 }}
+spec:
+  compatibilityRules:
+    - compDefs:
+        - {{ include "polardb-postgresql.cmpdRegexpPattern" . | quote }}
+      releases:
+        {{- range .Values.versions }}
+        - {{ .name | quote }}
+        {{- end }}
+  releases:
+    {{- range .Values.versions }}
+    - name: {{ .name | quote }}
+      serviceVersion: {{ .serviceVersion | quote }}
+      images:
+        polardb: {{ include "polardb-postgresql.image" $ | quote }}
+        ha-manager: {{ include "polardb-postgresql.image" $ | quote }}
+        roleProbe: {{ include "polardb-postgresql.image" $ | quote }}
+        accountProvision: {{ include "polardb-postgresql.image" $ | quote }}
+        switchover: {{ include "polardb-postgresql.image" $ | quote }}
+    {{- end }}

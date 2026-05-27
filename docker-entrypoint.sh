@@ -7,6 +7,7 @@ PRIMARY=$DATA_ROOT/primary_datadir
 SHARED=$DATA_ROOT/shared_datadir
 PORT=${POLARDB_PORT:-5432}
 INIT_MARKER="$PRIMARY/PG_VERSION"
+HA_DEMOTED_MARKER="$DATA_ROOT/ha-demoted"
 
 run_as_postgres() {
     if [ "$(id -u)" = "0" ]; then
@@ -100,6 +101,165 @@ temp_server_stop() {
         -D "$PRIMARY" \
         -m fast \
         -w stop
+}
+
+ha_enabled() {
+    case "${POLARDB_HA_ENABLED:-0}" in
+        1|true|TRUE|yes|YES|on|ON)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+pod_ordinal() {
+    local name
+    name="${POD_NAME:-${HOSTNAME:-}}"
+    printf '%s' "${name##*-}"
+}
+
+ha_primary_host() {
+    printf '%s' "${POLARDB_HA_PRIMARY_HOST:-}"
+}
+
+ha_bootstrap_primary_host() {
+    printf '%s' "${POLARDB_HA_BOOTSTRAP_PRIMARY_HOST:-${POLARDB_HA_PRIMARY_HOST:-}}"
+}
+
+ha_rejoin_primary_host() {
+    printf '%s' "${POLARDB_HA_REJOIN_PRIMARY_HOST:-${POLARDB_HA_PRIMARY_HOST:-}}"
+}
+
+pgpass_escape() {
+    local value
+    value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//:/\\:}"
+    printf '%s' "$value"
+}
+
+write_pgpass() {
+    {
+        printf '%s:%s:*:%s:%s\n' \
+            "*" \
+            "$(pgpass_escape "$PORT")" \
+            "$(pgpass_escape "${POLARDB_USER:-postgres}")" \
+            "$(pgpass_escape "${POLARDB_PASSWORD:-}")"
+    } > /home/postgres/.pgpass
+    chmod 600 /home/postgres/.pgpass
+    if [ "$(id -u)" = "0" ]; then
+        chown postgres:postgres /home/postgres/.pgpass
+    fi
+}
+
+wait_for_primary() {
+    local host timeout started now
+    host="$(ha_bootstrap_primary_host)"
+    timeout="${POLARDB_HA_PRIMARY_WAIT_SECONDS:-600}"
+    started="$(date +%s)"
+
+    if [ -z "$host" ]; then
+        echo "POLARDB_HA_PRIMARY_HOST is required for standby bootstrap" >&2
+        exit 1
+    fi
+
+    echo "Waiting for primary at $host:$PORT"
+    while true; do
+        if PGPASSWORD="${POLARDB_PASSWORD:-}" "$BASE/bin/pg_isready" \
+            -h "$host" \
+            -p "$PORT" \
+            -U "${POLARDB_USER:-postgres}" \
+            -d postgres \
+            -q; then
+            return 0
+        fi
+
+        now="$(date +%s)"
+        if [ $((now - started)) -ge "$timeout" ]; then
+            echo "Timed out waiting for primary at $host:$PORT" >&2
+            exit 1
+        fi
+        sleep 5
+    done
+}
+
+append_ha_primary_config() {
+    local conf
+    conf="$PRIMARY/postgresql.conf"
+    {
+        echo "# BEGIN polardb-ha-primary"
+        echo "wal_level = 'replica'"
+        echo "max_wal_senders = ${POLARDB_HA_MAX_WAL_SENDERS:-10}"
+        echo "max_replication_slots = ${POLARDB_HA_MAX_REPLICATION_SLOTS:-10}"
+        echo "wal_keep_size = '${POLARDB_HA_WAL_KEEP_SIZE:-1024MB}'"
+        echo "hot_standby = on"
+        echo "# END polardb-ha-primary"
+    } >> "$conf"
+
+    {
+        echo "host replication all 0.0.0.0/0 md5"
+        echo "host replication all ::/0 md5"
+    } >> "$PRIMARY/pg_hba.conf"
+}
+
+configure_standby_recovery() {
+    local conf host app_name
+    conf="$PRIMARY/postgresql.conf"
+    host="$(ha_bootstrap_primary_host)"
+    app_name="${POD_NAME:-${HOSTNAME:-standby}}"
+
+    write_pgpass
+
+    touch "$PRIMARY/standby.signal"
+    {
+        echo "# BEGIN polardb-ha-standby"
+        printf "primary_conninfo = 'host=%s port=%s user=%s dbname=postgres application_name=%s'\n" \
+            "$host" \
+            "$PORT" \
+            "${POLARDB_USER:-postgres}" \
+            "$app_name"
+        echo "recovery_target_timeline = 'latest'"
+        echo "hot_standby = on"
+        echo "# END polardb-ha-standby"
+    } >> "$conf"
+}
+
+initialize_ha_standby() {
+    local tmp_primary tmp_shared host
+    host="$(ha_bootstrap_primary_host)"
+
+    verify_minimum_env
+    wait_for_primary
+
+    echo "Bootstrapping PolarDB standby from $host:$PORT"
+    rm -rf "$PRIMARY" "$SHARED"
+    tmp_primary="${PRIMARY}.basebackup.$$"
+    tmp_shared="${SHARED}.basebackup.$$"
+    rm -rf "$tmp_primary" "$tmp_shared"
+    mkdir -p "$tmp_primary" "$tmp_shared"
+    if [ "$(id -u)" = "0" ]; then
+        chown postgres:postgres "$tmp_primary" "$tmp_shared"
+    fi
+    write_pgpass
+
+    PGPASSWORD="${POLARDB_PASSWORD:-}" run_as_postgres "$BASE/bin/polar_basebackup" \
+        -D "$tmp_primary" \
+        -h "$host" \
+        -p "$PORT" \
+        -U "${POLARDB_USER:-postgres}" \
+        --polardata="$tmp_shared" \
+        --no-sync \
+        -v
+
+    mv "$tmp_primary" "$PRIMARY"
+    mv "$tmp_shared" "$SHARED"
+    configure_standby_recovery
+}
+
+standby_data_directory() {
+    [ -f "$PRIMARY/standby.signal" ] || [ -f "$PRIMARY/replica.signal" ]
 }
 
 documentdb_enabled() {
@@ -342,6 +502,10 @@ initialize_database() {
         echo "host all all ::/0 md5"
     } >> "$PRIMARY/pg_hba.conf"
 
+    if ha_enabled; then
+        append_ha_primary_config
+    fi
+
     run_as_postgres "$BASE/bin/polar-initdb.sh" "$PRIMARY/" "$SHARED/" primary localfs
 
     temp_server_start
@@ -392,11 +556,26 @@ main() {
 
         create_directories
 
+        if ha_enabled && [ "${POLARDB_HA_REJOIN:-0}" = "1" ]; then
+            echo "POLARDB_HA_REJOIN=1 set; rebuilding this pod as standby"
+            rm -f "$HA_DEMOTED_MARKER"
+            POLARDB_HA_BOOTSTRAP_PRIMARY_HOST="$(ha_rejoin_primary_host)" initialize_ha_standby
+        fi
+
         if [ ! -s "$INIT_MARKER" ]; then
-            initialize_database
+            if ha_enabled && [ "$(pod_ordinal)" != "0" ]; then
+                initialize_ha_standby
+            else
+                initialize_database
+            fi
         else
+            if ha_enabled && [ -f "$HA_DEMOTED_MARKER" ]; then
+                echo "This pod was demoted by the HA manager and must be rebuilt before rejoining" >&2
+                echo "Remove $DATA_ROOT only after confirming another pod is primary" >&2
+                exit 1
+            fi
             echo "PolarDB data directory already initialized, skipping init"
-            if documentdb_enabled; then
+            if documentdb_enabled && ! standby_data_directory; then
                 reconcile_documentdb
             fi
         fi

@@ -13,7 +13,7 @@ metadata:
   {{- end }}
 spec:
   serviceName: {{ include "polardb-for-postgresql.polardbHeadlessServiceName" . }}
-  replicas: 1
+  replicas: {{ ternary .Values.ha.replicaCount .Values.polardb.replicaCount .Values.ha.enabled }}
   selector:
     matchLabels:
       {{- include "polardb-for-postgresql.polardbSelectorLabels" . | nindent 6 }}
@@ -28,6 +28,9 @@ spec:
     metadata:
       labels:
         {{- include "polardb-for-postgresql.polardbSelectorLabels" . | nindent 8 }}
+        {{- if .Values.ha.enabled }}
+        polardb-role: unknown
+        {{- end }}
         {{- with .Values.polardb.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -43,6 +46,10 @@ spec:
       {{- with .Values.polardb.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.ha.enabled }}
+      serviceAccountName: {{ include "polardb-for-postgresql.polardbServiceAccountName" . }}
+      shareProcessNamespace: {{ .Values.ha.shareProcessNamespace }}
       {{- end }}
       containers:
         - name: polardb
@@ -70,6 +77,32 @@ spec:
               value: {{ .Values.polardb.port | quote }}
             - name: POLARDB_DATA_DIR
               value: /var/polardb
+            {{- if .Values.ha.enabled }}
+            - name: POLARDB_HA_ENABLED
+              value: "1"
+            - name: POLARDB_HA_PRIMARY_HOST
+              value: {{ include "polardb-for-postgresql.polardbServiceName" . | quote }}
+            - name: POLARDB_HA_BOOTSTRAP_PRIMARY_HOST
+              value: {{ printf "%s-0.%s" (include "polardb-for-postgresql.polardbName" .) (include "polardb-for-postgresql.polardbHeadlessServiceName" .) | quote }}
+            - name: POLARDB_HA_REJOIN_PRIMARY_HOST
+              value: {{ include "polardb-for-postgresql.polardbServiceName" . | quote }}
+            - name: POLARDB_HA_PRIMARY_WAIT_SECONDS
+              value: {{ .Values.ha.primaryWaitSeconds | quote }}
+            - name: POLARDB_HA_WAL_KEEP_SIZE
+              value: {{ .Values.ha.replication.walKeepSize | quote }}
+            - name: POLARDB_HA_MAX_WAL_SENDERS
+              value: {{ .Values.ha.replication.maxWalSenders | quote }}
+            - name: POLARDB_HA_MAX_REPLICATION_SLOTS
+              value: {{ .Values.ha.replication.maxReplicationSlots | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- end }}
             {{- with .Values.polardb.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -117,6 +150,77 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.polardb.resources | nindent 12 }}
+        {{- if .Values.ha.enabled }}
+        - name: ha-manager
+          image: {{ .Values.polardb.image | quote }}
+          imagePullPolicy: {{ .Values.polardb.imagePullPolicy }}
+          command:
+            - /usr/bin/python3
+            - /home/postgres/polardb-ha-manager.py
+          env:
+            - name: POLARDB_USER
+              value: {{ .Values.auth.user | quote }}
+            - name: POLARDB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "polardb-for-postgresql.secretName" . }}
+                  key: password
+            - name: POLARDB_PORT
+              value: {{ .Values.polardb.port | quote }}
+            - name: POLARDB_DATA_DIR
+              value: /var/polardb
+            - name: POLARDB_HA_LEASE_NAME
+              value: {{ include "polardb-for-postgresql.polardbLeaseName" . | quote }}
+            - name: POLARDB_HA_LEASE_DURATION_SECONDS
+              value: {{ .Values.ha.leaseDurationSeconds | quote }}
+            - name: POLARDB_HA_RETRY_PERIOD_SECONDS
+              value: {{ .Values.ha.retryPeriodSeconds | quote }}
+            - name: POLARDB_HA_FAILOVER_ENABLED
+              value: {{ ternary "1" "0" .Values.ha.failover.enabled | quote }}
+            - name: POLARDB_HA_PROMOTE_TIMEOUT_SECONDS
+              value: {{ .Values.ha.failover.promoteTimeoutSeconds | quote }}
+            - name: POLARDB_HA_PRIMARY_HOST
+              value: {{ include "polardb-for-postgresql.polardbServiceName" . | quote }}
+            - name: POLARDB_HA_PRIMARY_HEADLESS_TEMPLATE
+              value: {{ printf "$(POD_NAME).%s" (include "polardb-for-postgresql.polardbHeadlessServiceName" .) | quote }}
+            - name: POLARDB_HA_POD_LABEL_SELECTOR
+              value: {{ include "polardb-for-postgresql.polardbLabelSelector" . | quote }}
+            - name: POLARDB_HA_HTTP_PORT
+              value: {{ .Values.ha.manager.httpPort | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: ha-http
+              containerPort: {{ .Values.ha.manager.httpPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: ha-http
+            initialDelaySeconds: {{ .Values.ha.manager.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.ha.manager.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.ha.manager.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.ha.manager.livenessProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: ha-http
+            initialDelaySeconds: {{ .Values.ha.manager.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.ha.manager.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.ha.manager.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.ha.manager.readinessProbe.failureThreshold }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/polardb
+          resources:
+            {{- toYaml .Values.ha.manager.resources | nindent 12 }}
+        {{- end }}
       {{- with .Values.polardb.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

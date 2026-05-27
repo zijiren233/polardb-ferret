@@ -1,0 +1,47 @@
+{{- if .Values.ha.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "polardb-for-postgresql.polardbServiceAccountName" . }}
+  labels:
+    {{- include "polardb-for-postgresql.polardbLabels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "polardb-for-postgresql.polardbName" . }}-ha
+  labels:
+    {{- include "polardb-for-postgresql.polardbLabels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - create
+      - update
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "polardb-for-postgresql.polardbName" . }}-ha
+  labels:
+    {{- include "polardb-for-postgresql.polardbLabels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "polardb-for-postgresql.polardbServiceAccountName" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "polardb-for-postgresql.polardbName" . }}-ha
+{{- end }}

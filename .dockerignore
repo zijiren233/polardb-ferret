@@ -2,3 +2,4 @@
 !Dockerfile
 !.dockerignore
 !docker-entrypoint.sh
+!polardb-ha-manager.py

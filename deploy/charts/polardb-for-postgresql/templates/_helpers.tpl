@@ -63,9 +63,29 @@ PolarDB component names and labels.
 {{- printf "%s-headless" (include "polardb-for-postgresql.polardbName" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{- define "polardb-for-postgresql.polardbReplicaServiceName" -}}
+{{- printf "%s-replica" (include "polardb-for-postgresql.polardbName" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "polardb-for-postgresql.polardbServiceAccountName" -}}
+{{- include "polardb-for-postgresql.polardbName" . }}
+{{- end }}
+
+{{- define "polardb-for-postgresql.polardbLeaseName" -}}
+{{- if .Values.ha.leaseName }}
+{{- .Values.ha.leaseName | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-primary" (include "polardb-for-postgresql.polardbName" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+
 {{- define "polardb-for-postgresql.polardbSelectorLabels" -}}
 {{ include "polardb-for-postgresql.selectorLabels" . }}
 app.kubernetes.io/component: polardb
+{{- end }}
+
+{{- define "polardb-for-postgresql.polardbLabelSelector" -}}
+app.kubernetes.io/name={{ include "polardb-for-postgresql.name" . }},app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=polardb
 {{- end }}
 
 {{- define "polardb-for-postgresql.polardbLabels" -}}
