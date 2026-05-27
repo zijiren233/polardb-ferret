@@ -198,6 +198,10 @@ spec:
             value: {{ .Values.ha.replication.synchronous.commit | quote }}
           - name: POLARDB_HA_SYNCHRONOUS_STANDBY_NAMES
             value: {{ .Values.ha.replication.synchronous.standbyNames | quote }}
+          - name: POLARDB_HA_REWIND_DEMOTED
+            value: {{ ternary "1" "0" .Values.ha.rejoin.rewindDemoted | quote }}
+          - name: POLARDB_HA_REBUILD_DEMOTED
+            value: {{ ternary "1" "0" .Values.ha.rejoin.rebuildDemoted | quote }}
           - name: CURRENT_POD_NAME
             valueFrom:
               fieldRef:

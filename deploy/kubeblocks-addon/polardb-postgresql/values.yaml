@@ -30,6 +30,9 @@ ha:
       enabled: true
       commit: "on"
       standbyNames: "FIRST 1 (*)"
+  rejoin:
+    rewindDemoted: true
+    rebuildDemoted: false
 
 roleProbe:
   periodSeconds: 2

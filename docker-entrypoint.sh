@@ -126,6 +126,28 @@ ha_synchronous_replication_enabled() {
     esac
 }
 
+ha_rewind_demoted_enabled() {
+    case "${POLARDB_HA_REWIND_DEMOTED:-1}" in
+        1|true|TRUE|yes|YES|on|ON)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+ha_rebuild_demoted_enabled() {
+    case "${POLARDB_HA_REBUILD_DEMOTED:-0}" in
+        1|true|TRUE|yes|YES|on|ON)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 pod_ordinal() {
     local name
     name="${POD_NAME:-${HOSTNAME:-}}"
@@ -256,6 +278,9 @@ configure_standby_recovery() {
 
     touch "$PRIMARY/standby.signal"
     remove_postgresql_conf_block "$conf" "# BEGIN polardb-ha-standby" "# END polardb-ha-standby"
+    if [ -f "$PRIMARY/postgresql.auto.conf" ]; then
+        remove_postgresql_conf_key "$PRIMARY/postgresql.auto.conf" "primary_conninfo"
+    fi
     {
         echo "# BEGIN polardb-ha-standby"
         printf "primary_conninfo = 'host=%s port=%s user=%s dbname=postgres application_name=%s'\n" \
@@ -305,6 +330,49 @@ initialize_ha_standby() {
     fi
     append_ha_primary_config
     configure_standby_recovery
+}
+
+rewind_ha_standby() {
+    local host source_server
+    host="$(ha_rejoin_primary_host)"
+
+    verify_minimum_env
+    if [ -z "$host" ]; then
+        echo "POLARDB_HA_REJOIN_PRIMARY_HOST or POLARDB_HA_PRIMARY_HOST is required for pg_rewind" >&2
+        return 1
+    fi
+    if ! primary_service_available_for_rejoin; then
+        echo "Current primary at $host:$PORT is not ready; cannot run pg_rewind" >&2
+        return 1
+    fi
+
+    echo "Rewinding demoted primary from current primary at $host:$PORT"
+    write_pgpass
+    source_server="host=$host port=$PORT user=${POLARDB_USER:-postgres} dbname=postgres"
+
+    if ! PGPASSWORD="${POLARDB_PASSWORD:-}" run_as_postgres "$BASE/bin/pg_rewind" \
+        -D "$PRIMARY" \
+        --source-server="$source_server" \
+        --progress; then
+        echo "pg_rewind failed; data is preserved at $DATA_ROOT" >&2
+        return 1
+    fi
+
+    chmod 700 "$PRIMARY" || :
+    chmod 700 "$SHARED" || :
+    if [ "$(id -u)" = "0" ]; then
+        chown -R postgres:postgres "$PRIMARY" "$SHARED"
+    fi
+    POLARDB_HA_BOOTSTRAP_PRIMARY_HOST="$host" append_ha_primary_config
+    POLARDB_HA_BOOTSTRAP_PRIMARY_HOST="$host" configure_standby_recovery
+    rm -f "$HA_DEMOTED_MARKER"
+    echo "Demoted primary was rewound and configured as standby"
+}
+
+rebuild_ha_standby_from_current_primary() {
+    echo "Rebuilding this pod as standby from the current primary"
+    rm -f "$HA_DEMOTED_MARKER"
+    POLARDB_HA_BOOTSTRAP_PRIMARY_HOST="$(ha_rejoin_primary_host)" initialize_ha_standby
 }
 
 standby_data_directory() {
@@ -605,10 +673,19 @@ main() {
 
         create_directories
 
-        if ha_enabled && [ "${POLARDB_HA_REJOIN:-0}" = "1" ]; then
-            echo "POLARDB_HA_REJOIN=1 set; rebuilding this pod as standby"
-            rm -f "$HA_DEMOTED_MARKER"
-            POLARDB_HA_BOOTSTRAP_PRIMARY_HOST="$(ha_rejoin_primary_host)" initialize_ha_standby
+        if ha_enabled && [ "${POLARDB_HA_REJOIN:-0}" = "1" ] && [ -s "$INIT_MARKER" ]; then
+            echo "POLARDB_HA_REJOIN=1 set; trying to rejoin this pod as standby"
+            if ha_rewind_demoted_enabled && rewind_ha_standby; then
+                :
+            elif ha_rebuild_demoted_enabled; then
+                rebuild_ha_standby_from_current_primary
+            else
+                echo "Automatic rebuild is disabled; set POLARDB_HA_REBUILD_DEMOTED=1 to allow a full base backup rebuild." >&2
+                exit 1
+            fi
+        elif ha_enabled && [ "${POLARDB_HA_REJOIN:-0}" = "1" ]; then
+            echo "POLARDB_HA_REJOIN=1 set and data directory is empty; bootstrapping as standby"
+            rebuild_ha_standby_from_current_primary
         fi
 
         if [ ! -s "$INIT_MARKER" ]; then
@@ -622,13 +699,14 @@ main() {
             fi
         else
             if ha_enabled && [ -f "$HA_DEMOTED_MARKER" ]; then
-                if [ "${POLARDB_HA_REBUILD_DEMOTED:-0}" = "1" ] && primary_service_available_for_rejoin; then
-                    echo "This pod was demoted; rebuilding it as standby from the current primary"
-                    rm -f "$HA_DEMOTED_MARKER"
-                    POLARDB_HA_BOOTSTRAP_PRIMARY_HOST="$(ha_rejoin_primary_host)" initialize_ha_standby
+                if ha_rewind_demoted_enabled && rewind_ha_standby; then
+                    :
+                elif ha_rebuild_demoted_enabled && primary_service_available_for_rejoin; then
+                    echo "pg_rewind was not possible; full rebuild was explicitly enabled"
+                    rebuild_ha_standby_from_current_primary
                 else
                     echo "This pod was demoted and requires manual rejoin or rebuild" >&2
-                    echo "Data is preserved at $DATA_ROOT. Set POLARDB_HA_REBUILD_DEMOTED=1 only after accepting possible data loss." >&2
+                    echo "Data is preserved at $DATA_ROOT. Default rejoin uses pg_rewind; set POLARDB_HA_REBUILD_DEMOTED=1 only after accepting a full rebuild." >&2
                     exit 1
                 fi
             fi

@@ -59,3 +59,7 @@ reduces data-loss risk during failover, but writes can wait when no standby is
 healthy. In HA mode the StatefulSet uses `podManagementPolicy=Parallel` by
 default so standby pods can bootstrap without strict ordinal serialization. See
 `docs/high-availability.md` for operations and recovery details.
+
+After failover, a demoted old primary defaults to `pg_rewind` based rejoin when
+it restarts. Full basebackup rebuild of a demoted pod is disabled by default and
+requires `ha.rejoin.rebuildDemoted=true`.

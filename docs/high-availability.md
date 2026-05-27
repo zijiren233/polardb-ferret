@@ -94,6 +94,9 @@ ha:
       enabled: true
       commit: "on"
       standbyNames: "FIRST 1 (*)"
+  rejoin:
+    rewindDemoted: true
+    rebuildDemoted: false
 ```
 
 参数含义：
@@ -114,6 +117,10 @@ ha:
 - `ha.replication.synchronous.enabled`: 是否写入同步复制参数。默认开启。
 - `ha.replication.synchronous.commit`: 写入 `synchronous_commit`，默认 `on`。
 - `ha.replication.synchronous.standbyNames`: 写入 `synchronous_standby_names`，默认 `FIRST 1 (*)`。
+- `ha.rejoin.rewindDemoted`: demoted 旧 primary 重启时是否默认尝试 `pg_rewind` 增量变为
+  standby。默认开启。
+- `ha.rejoin.rebuildDemoted`: `pg_rewind` 不可用时是否允许清理本地数据并重新做
+  `polar_basebackup`。默认关闭，避免 Pod 抖动导致反复全量重建。
 
 默认同步复制是偏数据安全的取舍：有健康 standby 时，primary 的提交需要等待至少一个同步
 standby 确认 WAL；如果所有 standby 不可用，写入可能等待或超时，直到 standby 恢复或运维临时关闭同步复制。
@@ -233,12 +240,23 @@ kubectl exec -n polardb <primary-pod> -c polardb -- \
 pg_ctl -D /var/polardb/primary_datadir -m fast -w stop
 ```
 
-之后该 Pod 重启时会因为存在 `ha-demoted` 标记而退出，不会自动以旧数据重新加入。
-这是为了避免旧 primary 回来后形成双主。
+之后该 Pod 重启时会先看到 `ha-demoted` 标记。默认行为不是清数据重建，而是尝试用
+`pg_rewind` 从当前 primary 回退分叉 WAL，并把自己配置成 standby。只有 rewind 失败且显式开启
+`ha.rejoin.rebuildDemoted=true` 时，才会清理本地数据重新做全量 basebackup。
 
 ## 旧 primary 重新加入
 
-当前默认不自动 rejoin。建议按下面流程人工处理：
+旧 primary 不能只改 `primary_conninfo` 直接当 standby。原因是故障窗口内旧 primary 可能写过新
+primary 没有的 WAL，已经形成 timeline 分叉；直接跟随新主可能导致数据目录不一致。正确顺序是：
+停止旧 primary 写入，使用 `pg_rewind` 让旧数据目录回到新 primary 的历史线上，再写
+`standby.signal` 和 `primary_conninfo`。
+
+当前默认自动尝试安全 rejoin：
+
+- `ha.rejoin.rewindDemoted=true`: 默认开启，旧 primary 重启后先执行 `pg_rewind`。
+- `ha.rejoin.rebuildDemoted=false`: 默认关闭，rewind 失败时保留数据并退出，不自动全量重建。
+
+建议按下面流程确认：
 
 1. 确认集群已有健康 primary：
 
@@ -254,19 +272,33 @@ kubectl exec -n polardb <primary-pod> -c polardb -- \
   psql -U postgres -d postgres -c "create table if not exists ha_rejoin_check(id int);"
 ```
 
-3. 找到需要重建的旧 primary Pod 和 PVC。
+3. 查看旧 primary 日志，确认是否完成 rewind：
 
-4. 临时给该 Pod 注入 `POLARDB_HA_REJOIN=1` 不是当前 chart 的一键操作。推荐的安全做法是：
+```bash
+kubectl logs -n polardb <old-primary-pod> -c polardb
+```
 
-- 删除该旧 Pod 对应的数据 PVC。
-- 让 StatefulSet 重新创建 Pod。
-- 新 Pod 会按 standby 初始化流程从当前 primary 重新 clone。
+成功时日志会包含：
 
-如果必须保留 PVC 对象并在容器内重建，需要先确认没有任何进程使用旧数据目录，再由运维脚本设置
-`POLARDB_HA_REJOIN=1` 或 `POLARDB_HA_REBUILD_DEMOTED=1` 并重启该 Pod。
-这会清理旧 primary 的本地数据并从当前 primary 重新 clone。如果同步复制曾被关闭，或者旧 primary
-上存在没有同步到新 primary 的已提交事务，这些事务会丢失，因此不要在无法确认新 primary 健康和可接受
-RPO 时执行该操作。
+```text
+Demoted primary was rewound and configured as standby
+```
+
+4. 如果 rewind 失败，先保留 PVC，人工判断失败原因。常见原因包括 WAL 不足、当前 primary 不可达、
+   或 PolarDB shared data 目录无法被 rewind 覆盖。
+
+只有在确认可以接受全量重建该 Pod 本地数据时，才开启：
+
+```bash
+helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
+  -n polardb \
+  --set ha.enabled=true \
+  --set ha.rejoin.rebuildDemoted=true
+```
+
+全量重建会清理旧 primary 的本地数据并从当前 primary 重新 clone。如果同步复制曾被关闭，或者旧
+primary 上存在没有同步到新 primary 的已提交事务，这些事务会丢失，因此不要在无法确认新 primary
+健康和可接受 RPO 时执行该操作。
 
 ## 暂停自动故障切换
 
@@ -314,6 +346,7 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
   `ha-manager` fencing；如果 sidecar 自身卡死，则仍有风险。
 - 当前只检查抢占者自己的 replay lag；还没有全局比较所有 standby 后选择最新节点。
 - 没有复制槽管理，standby 长时间落后后可能无法继续追 WAL。
+- 旧 primary 默认会尝试 `pg_rewind` 自动 rejoin，但还需要更多 PolarDB shared data 场景测试。
 - 没有安全 switchover，滚动维护时仍需要谨慎。
 - 默认同步复制降低数据丢失风险，但不能替代强 fencing；它也会在 standby 不可用时牺牲写入可用性。
 
@@ -324,5 +357,5 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
 1. standby 周期性上报 replay LSN，由最新 standby 才能接管。
 2. 实现安全 switchover 命令。
 3. 增加 replication slot 管理。
-4. 增加 `pg_rewind`/自动 rejoin，但默认关闭。
+4. 增强 `pg_rewind` rejoin 的 e2e 覆盖和失败原因上报。
 5. 增加 kind/minikube e2e 故障演练脚本。
