@@ -229,7 +229,7 @@ def run(cmd, check=False, timeout=10):
     result = subprocess.run(
         cmd,
         env=env,
-        text=True,
+        universal_newlines=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         timeout=timeout,
