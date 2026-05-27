@@ -118,7 +118,6 @@ spec:
       periodSeconds: {{ .Values.roleProbe.periodSeconds }}
       timeoutSeconds: {{ .Values.roleProbe.timeoutSeconds }}
       exec:
-        container: ha-manager
         command:
           - /bin/bash
           - -ec
