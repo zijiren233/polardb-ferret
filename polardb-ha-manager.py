@@ -100,7 +100,16 @@ def kube_timestamp(dt=None):
 def parse_kube_timestamp(value):
     if not value:
         return None
-    return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    normalized = value.replace("Z", "+0000")
+    if "." in normalized:
+        base, rest = normalized.split(".", 1)
+        fraction = rest[:6].ljust(6, "0")
+        tz = rest[6:] or "+0000"
+        normalized = f"{base}.{fraction}{tz}"
+        fmt = "%Y-%m-%dT%H:%M:%S.%f%z"
+    else:
+        fmt = "%Y-%m-%dT%H:%M:%S%z"
+    return datetime.datetime.strptime(normalized, fmt)
 
 
 class KubeClient:
@@ -538,6 +547,16 @@ def reconcile(kube):
         stop_local_primary()
 
 
+def should_fence_after_error(kube):
+    if not db_ready() or in_recovery():
+        return False
+    lease = kube.get_lease()
+    if lease is None:
+        return False
+    holder = lease.get("spec", {}).get("holderIdentity")
+    return bool(holder and holder != POD_NAME and not lease_expired(lease))
+
+
 def main():
     kube = KubeClient()
     log(f"starting PolarDB HA manager for pod {POD_NAME}, lease {LEASE_NAME}")
@@ -548,7 +567,7 @@ def main():
         except Exception as exc:
             log(f"reconcile failed: {exc}")
             try:
-                if db_ready() and not in_recovery():
+                if should_fence_after_error(kube):
                     stop_local_primary()
             except Exception as fence_exc:
                 log(f"failed to fence local primary after reconcile error: {fence_exc}")
