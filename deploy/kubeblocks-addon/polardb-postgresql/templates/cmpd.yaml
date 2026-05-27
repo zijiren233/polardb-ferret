@@ -117,9 +117,12 @@ spec:
     roleProbe:
       periodSeconds: {{ .Values.roleProbe.periodSeconds }}
       timeoutSeconds: {{ .Values.roleProbe.timeoutSeconds }}
-      http:
-        port: "5001"
-        path: "/v1.0/getrole"
+      exec:
+        container: ha-manager
+        command:
+          - /bin/bash
+          - -ec
+          - curl -fsS --max-time 1 http://127.0.0.1:5001/v1.0/getrole
     accountProvision:
       exec:
         container: polardb
