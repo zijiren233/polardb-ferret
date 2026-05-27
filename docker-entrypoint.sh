@@ -185,6 +185,22 @@ wait_for_primary() {
     done
 }
 
+primary_service_available_for_rejoin() {
+    local host
+    host="$(ha_rejoin_primary_host)"
+
+    if [ -z "$host" ]; then
+        return 1
+    fi
+
+    PGPASSWORD="${POLARDB_PASSWORD:-}" "$BASE/bin/pg_isready" \
+        -h "$host" \
+        -p "$PORT" \
+        -U "${POLARDB_USER:-postgres}" \
+        -d postgres \
+        -q
+}
+
 append_ha_primary_config() {
     local conf
     conf="$PRIMARY/postgresql.conf"
@@ -568,16 +584,24 @@ main() {
         fi
 
         if [ ! -s "$INIT_MARKER" ]; then
-            if ha_enabled && [ "$(pod_ordinal)" != "0" ]; then
+            if ha_enabled && primary_service_available_for_rejoin; then
+                echo "Found an existing HA primary; bootstrapping this pod as standby"
+                POLARDB_HA_BOOTSTRAP_PRIMARY_HOST="$(ha_rejoin_primary_host)" initialize_ha_standby
+            elif ha_enabled && [ "$(pod_ordinal)" != "0" ]; then
                 initialize_ha_standby
             else
                 initialize_database
             fi
         else
             if ha_enabled && [ -f "$HA_DEMOTED_MARKER" ]; then
-                echo "This pod was demoted by the HA manager and must be rebuilt before rejoining" >&2
-                echo "Remove $DATA_ROOT only after confirming another pod is primary" >&2
-                exit 1
+                if primary_service_available_for_rejoin; then
+                    echo "This pod was demoted; rebuilding it as standby from the current primary"
+                    rm -f "$HA_DEMOTED_MARKER"
+                    POLARDB_HA_BOOTSTRAP_PRIMARY_HOST="$(ha_rejoin_primary_host)" initialize_ha_standby
+                else
+                    echo "This pod was demoted and no current primary is reachable for rejoin" >&2
+                    exit 1
+                fi
             fi
             echo "PolarDB data directory already initialized, skipping init"
             if documentdb_enabled && ! standby_data_directory; then
