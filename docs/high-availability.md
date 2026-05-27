@@ -77,6 +77,7 @@ polardb-for-postgresql-polardb-replica:5432
 ha:
   enabled: true
   replicaCount: 3
+  podManagementPolicy: Parallel
   leaseDurationSeconds: 30
   retryPeriodSeconds: 5
   primaryWaitSeconds: 600
@@ -98,6 +99,9 @@ ha:
 参数含义：
 
 - `ha.replicaCount`: HA 模式下 StatefulSet 副本数。
+- `ha.podManagementPolicy`: HA 模式下 StatefulSet 的 Pod 管理策略，默认 `Parallel`。
+  这样多个 standby 可以同时进入等待 primary、basebackup 和 recovery 流程。非 HA 模式默认
+  使用 `polardb.podManagementPolicy=OrderedReady`。
 - `ha.leaseDurationSeconds`: Lease 超过该时间未续约后，standby 才能尝试接管。
 - `ha.retryPeriodSeconds`: HA sidecar 主循环周期。
 - `ha.primaryWaitSeconds`: standby 首次 clone 时等待初始 primary 的最长时间。
@@ -125,7 +129,8 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
 
 ## 启动流程
 
-1. StatefulSet 创建多个 Pod。
+1. StatefulSet 创建多个 Pod。直接 Helm HA 部署默认使用 `Parallel`，避免 standby 初始化被
+   严格串行化。
 2. `pod-0` 首次启动时执行 `initdb`、`polar-initdb.sh`，初始化为 primary。
 3. 其它 Pod 等待 `pod-0` 可连接。
 4. standby 执行：

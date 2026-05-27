@@ -14,6 +14,7 @@ metadata:
 spec:
   serviceName: {{ include "polardb-for-postgresql.polardbHeadlessServiceName" . }}
   replicas: {{ ternary .Values.ha.replicaCount .Values.polardb.replicaCount .Values.ha.enabled }}
+  podManagementPolicy: {{ ternary .Values.ha.podManagementPolicy .Values.polardb.podManagementPolicy .Values.ha.enabled }}
   selector:
     matchLabels:
       {{- include "polardb-for-postgresql.polardbSelectorLabels" . | nindent 6 }}

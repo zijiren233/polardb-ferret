@@ -16,6 +16,7 @@ polardb:
   imagePullPolicy: IfNotPresent
   port: 5432
   replicaCount: 1
+  podManagementPolicy: OrderedReady
 
   annotations: {}
   labels: {}
@@ -77,6 +78,7 @@ ha:
   leaseDurationSeconds: 30
   retryPeriodSeconds: 5
   primaryWaitSeconds: 600
+  podManagementPolicy: Parallel
   shareProcessNamespace: true
   failover:
     enabled: true

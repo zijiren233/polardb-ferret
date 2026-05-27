@@ -56,4 +56,6 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
 HA mode defaults to PostgreSQL synchronous replication with
 `synchronous_commit=on` and `synchronous_standby_names='FIRST 1 (*)'`. This
 reduces data-loss risk during failover, but writes can wait when no standby is
-healthy. See `docs/high-availability.md` for operations and recovery details.
+healthy. In HA mode the StatefulSet uses `podManagementPolicy=Parallel` by
+default so standby pods can bootstrap without strict ordinal serialization. See
+`docs/high-availability.md` for operations and recovery details.
