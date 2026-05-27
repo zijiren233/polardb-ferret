@@ -2,7 +2,7 @@ apiVersion: v2
 name: polardb-postgresql
 description: PolarDB for PostgreSQL 17 component definition for KubeBlocks
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: "17.9.1"
 home: https://github.com/labring-actions/polardb-for-postgresql
 icon: https://www.postgresql.org/media/img/about/press/elephant.png

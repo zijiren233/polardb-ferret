@@ -88,6 +88,7 @@ temp_server_start() {
     printf -v options '%q ' \
         --cluster-name=primary \
         -c listen_addresses= \
+        -c synchronous_commit=local \
         -p "$PORT"
 
     run_as_postgres "$BASE/bin/pg_ctl" \
@@ -105,6 +106,17 @@ temp_server_stop() {
 
 ha_enabled() {
     case "${POLARDB_HA_ENABLED:-0}" in
+        1|true|TRUE|yes|YES|on|ON)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+ha_synchronous_replication_enabled() {
+    case "${POLARDB_HA_SYNCHRONOUS_REPLICATION_ENABLED:-1}" in
         1|true|TRUE|yes|YES|on|ON)
             return 0
             ;;
@@ -138,6 +150,14 @@ pgpass_escape() {
     value="${value//\\/\\\\}"
     value="${value//:/\\:}"
     printf '%s' "$value"
+}
+
+append_line_once() {
+    local file line
+    file="$1"
+    line="$2"
+
+    grep -Fqx "$line" "$file" 2>/dev/null || echo "$line" >> "$file"
 }
 
 write_pgpass() {
@@ -204,6 +224,7 @@ primary_service_available_for_rejoin() {
 append_ha_primary_config() {
     local conf
     conf="$PRIMARY/postgresql.conf"
+    remove_postgresql_conf_block "$conf" "# BEGIN polardb-ha-primary" "# END polardb-ha-primary"
     {
         echo "# BEGIN polardb-ha-primary"
         echo "wal_level = 'replica'"
@@ -211,13 +232,18 @@ append_ha_primary_config() {
         echo "max_replication_slots = ${POLARDB_HA_MAX_REPLICATION_SLOTS:-10}"
         echo "wal_keep_size = '${POLARDB_HA_WAL_KEEP_SIZE:-1024MB}'"
         echo "hot_standby = on"
+        if ha_synchronous_replication_enabled; then
+            echo "synchronous_commit = '${POLARDB_HA_SYNCHRONOUS_COMMIT:-on}'"
+            echo "synchronous_standby_names = '${POLARDB_HA_SYNCHRONOUS_STANDBY_NAMES:-FIRST 1 (*)}'"
+        else
+            echo "synchronous_commit = '${POLARDB_HA_SYNCHRONOUS_COMMIT:-local}'"
+            echo "synchronous_standby_names = ''"
+        fi
         echo "# END polardb-ha-primary"
     } >> "$conf"
 
-    {
-        echo "host replication all 0.0.0.0/0 md5"
-        echo "host replication all ::/0 md5"
-    } >> "$PRIMARY/pg_hba.conf"
+    append_line_once "$PRIMARY/pg_hba.conf" "host replication all 0.0.0.0/0 md5"
+    append_line_once "$PRIMARY/pg_hba.conf" "host replication all ::/0 md5"
 }
 
 configure_standby_recovery() {
@@ -229,6 +255,7 @@ configure_standby_recovery() {
     write_pgpass
 
     touch "$PRIMARY/standby.signal"
+    remove_postgresql_conf_block "$conf" "# BEGIN polardb-ha-standby" "# END polardb-ha-standby"
     {
         echo "# BEGIN polardb-ha-standby"
         printf "primary_conninfo = 'host=%s port=%s user=%s dbname=postgres application_name=%s'\n" \
@@ -276,6 +303,7 @@ initialize_ha_standby() {
     if [ "$(id -u)" = "0" ]; then
         chown -R postgres:postgres "$PRIMARY" "$SHARED"
     fi
+    append_ha_primary_config
     configure_standby_recovery
 }
 
@@ -605,6 +633,9 @@ main() {
                 fi
             fi
             echo "PolarDB data directory already initialized, skipping init"
+            if ha_enabled; then
+                append_ha_primary_config
+            fi
             if documentdb_enabled && ! standby_data_directory; then
                 reconcile_documentdb
             fi

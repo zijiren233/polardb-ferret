@@ -81,10 +81,16 @@ ha:
   failover:
     enabled: true
     promoteTimeoutSeconds: 60
+    maximumLagOnFailoverBytes: 1048576
+    checkTimeline: true
   replication:
     walKeepSize: 1024MB
     maxWalSenders: 10
     maxReplicationSlots: 10
+    synchronous:
+      enabled: true
+      commit: "on"
+      standbyNames: "FIRST 1 (*)"
   service:
     replica:
       enabled: true

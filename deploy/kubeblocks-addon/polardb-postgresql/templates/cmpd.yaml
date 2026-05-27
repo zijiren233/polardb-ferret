@@ -192,6 +192,12 @@ spec:
             value: {{ .Values.ha.replication.maxWalSenders | quote }}
           - name: POLARDB_HA_MAX_REPLICATION_SLOTS
             value: {{ .Values.ha.replication.maxReplicationSlots | quote }}
+          - name: POLARDB_HA_SYNCHRONOUS_REPLICATION_ENABLED
+            value: {{ ternary "1" "0" .Values.ha.replication.synchronous.enabled | quote }}
+          - name: POLARDB_HA_SYNCHRONOUS_COMMIT
+            value: {{ .Values.ha.replication.synchronous.commit | quote }}
+          - name: POLARDB_HA_SYNCHRONOUS_STANDBY_NAMES
+            value: {{ .Values.ha.replication.synchronous.standbyNames | quote }}
           - name: CURRENT_POD_NAME
             valueFrom:
               fieldRef:
@@ -263,6 +269,10 @@ spec:
             value: "1"
           - name: POLARDB_HA_PROMOTE_TIMEOUT_SECONDS
             value: {{ .Values.ha.promoteTimeoutSeconds | quote }}
+          - name: POLARDB_HA_MAXIMUM_LAG_ON_FAILOVER_BYTES
+            value: {{ .Values.ha.maximumLagOnFailoverBytes | quote }}
+          - name: POLARDB_HA_CHECK_TIMELINE
+            value: {{ ternary "1" "0" .Values.ha.checkTimeline | quote }}
           - name: POLARDB_HA_PATCH_POD_ROLE
             value: "0"
           - name: POLARDB_HA_PRIMARY_ROLE_VALUE

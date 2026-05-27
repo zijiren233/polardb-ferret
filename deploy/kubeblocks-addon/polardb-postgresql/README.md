@@ -30,10 +30,14 @@ The component exposes two role-aware services through KubeBlocks:
 The first version keeps the existing script-based HA manager:
 
 - Kubernetes `Lease` elects the writable primary.
+- The primary records WAL LSN and timeline in Lease annotations.
+- Failover candidates check replay lag and timeline before promotion.
+- PostgreSQL synchronous replication is enabled by default with
+  `synchronous_commit=on` and `synchronous_standby_names='FIRST 1 (*)'`.
 - `polardb-ha-manager.py` exposes `/v1.0/getrole` on port `5001`.
 - KubeBlocks `roleProbe` consumes that endpoint and owns role labels.
 - The primary Service uses `roleSelector: primary`.
 
 Manual KubeBlocks `switchover` is deliberately stubbed out for now. It needs
-candidate lag checks, old-primary fencing and rejoin handling before it should be
-enabled as a normal OpsRequest path.
+old-primary fencing and rejoin handling before it should be enabled as a normal
+OpsRequest path.

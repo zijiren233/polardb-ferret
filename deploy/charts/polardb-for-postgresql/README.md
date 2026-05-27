@@ -42,3 +42,18 @@ ghcr.io/labring-sigs/polardb-for-postgresql:latest
 
 Docker image references are lower-case, while the source repository is
 `labring-sigs/PolarDB-for-PostgreSQL`.
+
+Enable the script-based HA mode with:
+
+```bash
+helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
+  -n polardb --create-namespace \
+  --set auth.password=change-me \
+  --set ha.enabled=true \
+  --set ha.replicaCount=3
+```
+
+HA mode defaults to PostgreSQL synchronous replication with
+`synchronous_commit=on` and `synchronous_standby_names='FIRST 1 (*)'`. This
+reduces data-loss risk during failover, but writes can wait when no standby is
+healthy. See `docs/high-availability.md` for operations and recovery details.

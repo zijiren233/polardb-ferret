@@ -23,10 +23,14 @@ Helm/StatefulSet 部署模式的日常操作、故障处理和维护判断。
 已实现：
 
 - Kubernetes `Lease` 选主和续约。
+- primary 续约时在 Lease annotation 中记录 WAL LSN、timeline 和观察时间。
 - primary Service 自动指向 `polardb-role=primary` Pod。
 - replica Service 自动指向 `polardb-role=standby` Pod。
 - standby 通过 `polar_basebackup --polardata` 初始化。
-- Lease 过期后，健康 standby 可以抢占 Lease 并执行 `pg_ctl promote`。
+- 默认开启 PostgreSQL 同步复制：`synchronous_commit=on`，
+  `synchronous_standby_names='FIRST 1 (*)'`。
+- Lease 过期后，健康 standby 只有在 timeline 检查通过且 replay lag 不超过阈值时，
+  才能抢占 Lease 并执行 `pg_ctl promote`。
 - 本地 PostgreSQL 是 primary 但 Pod 不持有 Lease 时，sidecar 会停止本地数据库。
 - 被 fencing 的旧 primary 会写入 `/var/polardb/ha-demoted`，避免重启后直接双主。
 - 新 primary 设置角色前会清理其它 Pod 残留的 `polardb-role=primary` label。
@@ -36,11 +40,10 @@ Helm/StatefulSet 部署模式的日常操作、故障处理和维护判断。
 
 未实现或仍需增强：
 
-- promote 前的复制延迟阈值检查。
 - 多 standby 之间按 LSN 选择最优候选。
 - 复制槽自动创建、迁移和重建。
 - 安全的计划内 switchover。
-- 旧 primary 自动 rejoin。
+- 旧 primary 自动安全 rejoin 或 `pg_rewind`。
 - Kubernetes API 分区场景下的强 fencing。
 - 完整 e2e 故障演练测试矩阵。
 
@@ -80,10 +83,16 @@ ha:
   failover:
     enabled: true
     promoteTimeoutSeconds: 60
+    maximumLagOnFailoverBytes: 1048576
+    checkTimeline: true
   replication:
     walKeepSize: 1024MB
     maxWalSenders: 10
     maxReplicationSlots: 10
+    synchronous:
+      enabled: true
+      commit: "on"
+      standbyNames: "FIRST 1 (*)"
 ```
 
 参数含义：
@@ -94,7 +103,25 @@ ha:
 - `ha.primaryWaitSeconds`: standby 首次 clone 时等待初始 primary 的最长时间。
 - `ha.failover.enabled`: 是否允许自动故障切换。
 - `ha.failover.promoteTimeoutSeconds`: `pg_ctl promote` 等待超时时间。
+- `ha.failover.maximumLagOnFailoverBytes`: standby replay LSN 落后 Lease 中最后 primary LSN 的最大允许字节数。
+  默认 `1048576`，参考 Patroni 常用的 `maximum_lag_on_failover` 默认量级。
+- `ha.failover.checkTimeline`: promote 前检查本地 timeline 不落后于 Lease 中记录的 primary timeline。
 - `ha.replication.walKeepSize`: primary 保留 WAL 的大小。当前没有复制槽自动管理，生产环境需要谨慎设置。
+- `ha.replication.synchronous.enabled`: 是否写入同步复制参数。默认开启。
+- `ha.replication.synchronous.commit`: 写入 `synchronous_commit`，默认 `on`。
+- `ha.replication.synchronous.standbyNames`: 写入 `synchronous_standby_names`，默认 `FIRST 1 (*)`。
+
+默认同步复制是偏数据安全的取舍：有健康 standby 时，primary 的提交需要等待至少一个同步
+standby 确认 WAL；如果所有 standby 不可用，写入可能等待或超时，直到 standby 恢复或运维临时关闭同步复制。
+
+如果业务优先可用性、能接受异步复制下的 RPO 风险，可以显式关闭：
+
+```bash
+helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
+  -n polardb \
+  --set ha.enabled=true \
+  --set ha.replication.synchronous.enabled=false
+```
 
 ## 启动流程
 
@@ -110,10 +137,12 @@ polar_basebackup \
 ```
 
 5. standby 写入 `standby.signal` 和 `primary_conninfo`。
-6. 每个 Pod 的 `ha-manager` 开始运行。
-7. primary 创建或续约 Lease。
-8. `ha-manager` 根据本地数据库状态和 Lease 状态更新 Pod role label。
-9. primary Service 指向当前 `polardb-role=primary` Pod。
+6. HA 节点写入复制参数。默认包含 `synchronous_commit=on` 和
+   `synchronous_standby_names='FIRST 1 (*)'`。
+7. 每个 Pod 的 `ha-manager` 开始运行。
+8. primary 创建或续约 Lease，并把当前 WAL LSN、timeline 写入 Lease annotation。
+9. `ha-manager` 根据本地数据库状态和 Lease 状态更新 Pod role label。
+10. primary Service 指向当前 `polardb-role=primary` Pod。
 
 ## 日常检查
 
@@ -130,6 +159,14 @@ kubectl get pod -n polardb \
 ```bash
 kubectl get lease -n polardb
 kubectl describe lease -n polardb polardb-for-postgresql-polardb-primary
+```
+
+Lease 中会包含类似下面的 annotation：
+
+```text
+polardb-pg.labring-sigs.io/last-wal-lsn
+polardb-pg.labring-sigs.io/timeline-id
+polardb-pg.labring-sigs.io/observed-at
 ```
 
 查看 HA manager 日志：
@@ -154,6 +191,14 @@ kubectl exec -n polardb polardb-for-postgresql-polardb-0 -c ha-manager -- \
   curl -s http://127.0.0.1:5001/v1.0/getrole
 ```
 
+查看同步复制状态：
+
+```bash
+kubectl exec -n polardb <primary-pod> -c polardb -- \
+  psql -U postgres -d postgres -x -c \
+  "show synchronous_commit; show synchronous_standby_names; select application_name,sync_state,state,replay_lsn from pg_stat_replication;"
+```
+
 ## 故障切换流程
 
 当当前 primary Pod 宕机、PostgreSQL 不可用，或者 `ha-manager` 无法续约 Lease：
@@ -161,12 +206,15 @@ kubectl exec -n polardb polardb-for-postgresql-polardb-0 -c ha-manager -- \
 1. Lease 超过 `ha.leaseDurationSeconds` 后被视为过期。
 2. 某个健康 standby 观察到 Lease 过期。
 3. standby 重新读取 Lease，确认仍然过期。
-4. standby 更新 Lease，将 `holderIdentity` 改为自己。
-5. standby 执行 `pg_ctl promote`。
-6. promote 成功后，该 Pod 标记为 `polardb-role=primary`。
-7. 新 primary 会清理其它 Pod 上残留的 `polardb-role=primary` label。
-8. primary Service 自动切到新 primary。
-9. 其它 standby 会改写 `primary_conninfo`，开始跟随新的 Lease holder。
+4. standby 读取 Lease 中最后一次 primary WAL LSN 和 timeline。
+5. standby 比较本地 replay LSN。如果落后超过 `maximumLagOnFailoverBytes`，拒绝接管。
+6. 如果开启 `checkTimeline`，standby 的 timeline 不能落后于 Lease 中记录的 timeline。
+7. 检查通过后，standby 更新 Lease，将 `holderIdentity` 改为自己。
+8. standby 执行 `pg_ctl promote`。如果 promote 失败，会释放刚抢到的 Lease。
+9. promote 成功后，该 Pod 标记为 `polardb-role=primary`。
+10. 新 primary 会清理其它 Pod 上残留的 `polardb-role=primary` label。
+11. primary Service 自动切到新 primary。
+12. 其它 standby 会改写 `primary_conninfo`，开始跟随新的 Lease holder。
 
 ## 旧 primary fencing
 
@@ -211,8 +259,9 @@ kubectl exec -n polardb <primary-pod> -c polardb -- \
 
 如果必须保留 PVC 对象并在容器内重建，需要先确认没有任何进程使用旧数据目录，再由运维脚本设置
 `POLARDB_HA_REJOIN=1` 或 `POLARDB_HA_REBUILD_DEMOTED=1` 并重启该 Pod。
-这会清理旧 primary 的本地数据并从当前 primary 重新 clone；在异步复制下，如果旧 primary 中存在未复制到新
-primary 的已提交事务，这些事务会丢失，因此不要在无法确认新 primary 健康和可接受 RPO 时执行该操作。
+这会清理旧 primary 的本地数据并从当前 primary 重新 clone。如果同步复制曾被关闭，或者旧 primary
+上存在没有同步到新 primary 的已提交事务，这些事务会丢失，因此不要在无法确认新 primary 健康和可接受
+RPO 时执行该操作。
 
 ## 暂停自动故障切换
 
@@ -258,17 +307,17 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
 - Lease 只代表 Kubernetes API 视角，不等同于强一致仲裁系统。
 - 网络分区时，如果旧 primary 仍能服务业务但不能访问 Kubernetes API，需要依赖本地
   `ha-manager` fencing；如果 sidecar 自身卡死，则仍有风险。
-- 没有复制延迟阈值检查，极端情况下可能提升落后的 standby。
+- 当前只检查抢占者自己的 replay lag；还没有全局比较所有 standby 后选择最新节点。
 - 没有复制槽管理，standby 长时间落后后可能无法继续追 WAL。
 - 没有安全 switchover，滚动维护时仍需要谨慎。
+- 默认同步复制降低数据丢失风险，但不能替代强 fencing；它也会在 standby 不可用时牺牲写入可用性。
 
 ## 后续优化清单
 
 优先级从高到低：
 
-1. promote 前检查 replay LSN 和延迟阈值。
-2. standby 周期性上报 replay LSN，由最新 standby 才能接管。
-3. 实现安全 switchover 命令。
-4. 增加 replication slot 管理。
-5. 增加自动 rejoin，但默认关闭。
-6. 增加 kind/minikube e2e 故障演练脚本。
+1. standby 周期性上报 replay LSN，由最新 standby 才能接管。
+2. 实现安全 switchover 命令。
+3. 增加 replication slot 管理。
+4. 增加 `pg_rewind`/自动 rejoin，但默认关闭。
+5. 增加 kind/minikube e2e 故障演练脚本。

@@ -56,6 +56,13 @@ LEASE_NAME = resolve_lease_name()
 LEASE_DURATION = int(os.environ.get("POLARDB_HA_LEASE_DURATION_SECONDS", "30"))
 RETRY_PERIOD = int(os.environ.get("POLARDB_HA_RETRY_PERIOD_SECONDS", "5"))
 PROMOTE_TIMEOUT = int(os.environ.get("POLARDB_HA_PROMOTE_TIMEOUT_SECONDS", "60"))
+MAXIMUM_LAG_ON_FAILOVER = int(os.environ.get("POLARDB_HA_MAXIMUM_LAG_ON_FAILOVER_BYTES", "1048576"))
+CHECK_TIMELINE = os.environ.get("POLARDB_HA_CHECK_TIMELINE", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 FAILOVER_ENABLED = os.environ.get("POLARDB_HA_FAILOVER_ENABLED", "1").lower() in (
     "1",
     "true",
@@ -73,6 +80,10 @@ ROLE_PRIMARY = os.environ.get("POLARDB_HA_PRIMARY_ROLE_VALUE", "primary")
 ROLE_STANDBY = os.environ.get("POLARDB_HA_STANDBY_ROLE_VALUE", "standby")
 ROLE_UNKNOWN = os.environ.get("POLARDB_HA_UNKNOWN_ROLE_VALUE", "unknown")
 DEMOTED_MARKER = os.path.join(DATA_ROOT, "ha-demoted")
+LEASE_ANNOTATION_PREFIX = "polardb-pg.labring-sigs.io"
+LEASE_WAL_LSN_ANNOTATION = f"{LEASE_ANNOTATION_PREFIX}/last-wal-lsn"
+LEASE_TIMELINE_ANNOTATION = f"{LEASE_ANNOTATION_PREFIX}/timeline-id"
+LEASE_OBSERVED_AT_ANNOTATION = f"{LEASE_ANNOTATION_PREFIX}/observed-at"
 PRIMARY_HEADLESS_TEMPLATE = os.environ.get("POLARDB_HA_PRIMARY_HEADLESS_TEMPLATE", "")
 POD_LABEL_SELECTOR = os.environ.get("POLARDB_HA_POD_LABEL_SELECTOR", "")
 HTTP_LISTEN = os.environ.get("POLARDB_HA_HTTP_LISTEN", "0.0.0.0")
@@ -154,7 +165,7 @@ class KubeClient:
         )
         return None if status == 404 else body
 
-    def create_lease(self):
+    def create_lease(self, annotations=None):
         now = kube_timestamp()
         body = {
             "apiVersion": "coordination.k8s.io/v1",
@@ -168,6 +179,8 @@ class KubeClient:
                 "leaseTransitions": 0,
             },
         }
+        if annotations:
+            body["metadata"]["annotations"] = annotations
         status, lease = self.request(
             "POST",
             f"/apis/coordination.k8s.io/v1/namespaces/{NAMESPACE}/leases",
@@ -175,7 +188,7 @@ class KubeClient:
         )
         return status == 201, lease
 
-    def update_lease(self, lease, acquire=False):
+    def update_lease(self, lease, acquire=False, annotations=None):
         spec = lease.get("spec", {})
         previous_holder = spec.get("holderIdentity")
         transitions = int(spec.get("leaseTransitions") or 0)
@@ -191,6 +204,25 @@ class KubeClient:
         if acquire or previous_holder != POD_NAME:
             new_spec["acquireTime"] = now
         lease["spec"] = new_spec
+        if annotations:
+            metadata = lease.setdefault("metadata", {})
+            metadata.setdefault("annotations", {}).update(annotations)
+        status, body = self.request(
+            "PUT",
+            f"/apis/coordination.k8s.io/v1/namespaces/{NAMESPACE}/leases/{LEASE_NAME}",
+            lease,
+        )
+        return status == 200, body
+
+    def release_lease(self, lease):
+        spec = lease.get("spec", {})
+        transitions = int(spec.get("leaseTransitions") or 0) + 1
+        lease["spec"] = {
+            "holderIdentity": "",
+            "leaseDurationSeconds": 1,
+            "renewTime": kube_timestamp(),
+            "leaseTransitions": transitions,
+        }
         status, body = self.request(
             "PUT",
             f"/apis/coordination.k8s.io/v1/namespaces/{NAMESPACE}/leases/{LEASE_NAME}",
@@ -287,6 +319,99 @@ def in_recovery():
     if result.returncode != 0:
         raise RuntimeError(result.stdout.strip())
     return result.stdout.strip().lower() in ("t", "true", "1")
+
+
+def query_scalar(sql, timeout=10):
+    result = run(
+        [
+            os.path.join(BASE, "bin/psql"),
+            "-h",
+            "127.0.0.1",
+            "-p",
+            PORT,
+            "-U",
+            DB_USER,
+            "-d",
+            "postgres",
+            "-At",
+            "-c",
+            sql,
+        ],
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stdout.strip())
+    return result.stdout.strip()
+
+
+def current_wal_lsn():
+    return query_scalar("select pg_current_wal_lsn()")
+
+
+def replay_wal_lsn():
+    return query_scalar("select coalesce(pg_last_wal_replay_lsn(), '0/0'::pg_lsn)")
+
+
+def current_timeline_id():
+    return query_scalar("select timeline_id from pg_control_checkpoint()")
+
+
+def local_wal_lsn():
+    if in_recovery():
+        return replay_wal_lsn()
+    return current_wal_lsn()
+
+
+def lease_observation_annotations():
+    return {
+        LEASE_WAL_LSN_ANNOTATION: local_wal_lsn(),
+        LEASE_TIMELINE_ANNOTATION: current_timeline_id(),
+        LEASE_OBSERVED_AT_ANNOTATION: kube_timestamp(),
+    }
+
+
+def lease_annotations(lease):
+    return lease.get("metadata", {}).get("annotations", {}) if lease else {}
+
+
+def wal_lag_bytes(lease_lsn):
+    local_lsn = replay_wal_lsn()
+    return int(
+        query_scalar(
+            "select greatest(pg_wal_lsn_diff("
+            f"{psql_literal(lease_lsn)}::pg_lsn, "
+            f"{psql_literal(local_lsn)}::pg_lsn), 0)::bigint"
+        )
+    )
+
+
+def candidate_safe_for_failover(lease):
+    annotations = lease_annotations(lease)
+    lease_lsn = annotations.get(LEASE_WAL_LSN_ANNOTATION, "")
+    lease_timeline = annotations.get(LEASE_TIMELINE_ANNOTATION, "")
+
+    if CHECK_TIMELINE:
+        if not lease_timeline:
+            log("refusing failover because lease has no timeline observation")
+            return False
+        local_timeline = current_timeline_id()
+        if int(local_timeline) < int(lease_timeline):
+            log(f"refusing failover because local timeline {local_timeline} is behind lease timeline {lease_timeline}")
+            return False
+
+    if not lease_lsn:
+        log("refusing failover because lease has no WAL LSN observation")
+        return False
+
+    lag = wal_lag_bytes(lease_lsn)
+    if lag > MAXIMUM_LAG_ON_FAILOVER:
+        log(
+            f"refusing failover because replay lag {lag} bytes exceeds "
+            f"POLARDB_HA_MAXIMUM_LAG_ON_FAILOVER_BYTES={MAXIMUM_LAG_ON_FAILOVER}"
+        )
+        return False
+    log(f"candidate replay lag {lag} bytes is within failover limit {MAXIMUM_LAG_ON_FAILOVER}")
+    return True
 
 
 def promote():
@@ -505,7 +630,7 @@ def reconcile(kube):
         if recovery:
             kube.set_pod_role(ROLE_STANDBY)
             return
-        created, _ = kube.create_lease()
+        created, _ = kube.create_lease(annotations=lease_observation_annotations())
         if created:
             log("created primary lease")
             kube.set_pod_role(ROLE_PRIMARY)
@@ -519,7 +644,7 @@ def reconcile(kube):
             log("this pod holds the lease but postgres is still in recovery")
             kube.set_pod_role(ROLE_STANDBY)
             return
-        updated, _ = kube.update_lease(lease)
+        updated, _ = kube.update_lease(lease, annotations=lease_observation_annotations())
         if updated:
             kube.set_pod_role(ROLE_PRIMARY)
         return
@@ -546,11 +671,24 @@ def reconcile(kube):
             ensure_following(refreshed.get("spec", {}).get("holderIdentity"))
             kube.set_pod_role(ROLE_STANDBY)
             return
+        if not candidate_safe_for_failover(refreshed):
+            kube.set_pod_role(ROLE_STANDBY)
+            return
         updated, _ = kube.update_lease(refreshed, acquire=True)
         if not updated:
             return
         log(f"acquired expired lease from {holder}")
-        promote()
+        try:
+            promote()
+        except Exception:
+            current_lease = kube.get_lease()
+            if current_lease and current_lease.get("spec", {}).get("holderIdentity") == POD_NAME:
+                kube.release_lease(current_lease)
+                log("released lease after promote failure")
+            raise
+        current_lease = kube.get_lease()
+        if current_lease:
+            kube.update_lease(current_lease, annotations=lease_observation_annotations())
         kube.set_pod_role(ROLE_PRIMARY)
     else:
         kube.set_pod_role(ROLE_UNKNOWN)
