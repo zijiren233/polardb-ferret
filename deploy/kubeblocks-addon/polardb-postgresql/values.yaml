@@ -29,7 +29,7 @@ ha:
     maxWalSenders: 10
     maxReplicationSlots: 10
     synchronous:
-      enabled: true
+      enabled: false
       commit: "on"
       standbyNames: "FIRST 1 (*)"
   rejoin:

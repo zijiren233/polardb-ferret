@@ -28,8 +28,7 @@ RPO/RTO 取舍后再打开。
 - primary Service 自动指向 `polardb-role=primary` Pod。
 - replica Service 自动指向 `polardb-role=standby` Pod。
 - standby 通过 `polar_basebackup --polardata` 初始化。
-- 默认开启 PostgreSQL 同步复制：`synchronous_commit=on`，
-  `synchronous_standby_names='FIRST 1 (*)'`。
+- 默认使用 PostgreSQL 异步复制，不写入 `synchronous_standby_names`。
 - 默认不自动故障切换。Lease 过期后 standby 继续保持 standby，不会自动执行
   `pg_ctl promote`。
 - 显式开启自动 failover 后，健康 standby 只有在 timeline 检查通过且 replay lag 不超过阈值时，
@@ -99,7 +98,7 @@ ha:
     maxWalSenders: 10
     maxReplicationSlots: 10
     synchronous:
-      enabled: true
+      enabled: false
       commit: "on"
       standbyNames: "FIRST 1 (*)"
   rejoin:
@@ -125,22 +124,23 @@ ha:
   这是偏数据安全的默认值；如果业务接受 RPO，可以显式放宽。
 - `ha.failover.checkTimeline`: promote 前检查本地 timeline 不落后于 Lease 中记录的 primary timeline。
 - `ha.replication.walKeepSize`: primary 保留 WAL 的大小。当前没有复制槽自动管理，生产环境需要谨慎设置。
-- `ha.replication.synchronous.enabled`: 是否写入同步复制参数。默认开启。
+- `ha.replication.synchronous.enabled`: 是否写入同步复制参数。默认关闭，也就是异步复制。
 - `ha.replication.synchronous.commit`: 写入 `synchronous_commit`，默认 `on`。
 - `ha.replication.synchronous.standbyNames`: 写入 `synchronous_standby_names`，默认 `FIRST 1 (*)`。
 - `ha.rejoin.rebuildDemoted`: 是否允许清理 demoted 旧 primary 的本地数据并重新做
   `polar_basebackup`。默认关闭，避免 Pod 抖动导致反复全量重建。
 
-默认同步复制是偏数据安全的取舍：有健康 standby 时，primary 的提交需要等待至少一个同步
-standby 确认 WAL；如果所有 standby 不可用，写入可能等待或超时，直到 standby 恢复或运维临时关闭同步复制。
+默认异步复制是偏写入可用性的取舍：primary 提交不等待 standby 确认 WAL，standby 故障不会阻塞
+写入；但如果 primary 故障，已提交但尚未复制并 replay 到 standby 的事务可能丢失。默认同时关闭
+自动故障切换，因此不会在异步状态下自动 promote standby。
 
-如果业务优先可用性、能接受异步复制下的 RPO 风险，可以显式关闭：
+如果业务要求降低数据丢失风险、并能接受 standby 不可用时写入可能等待或超时，可以显式开启同步复制：
 
 ```bash
 helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
   -n polardb \
   --set ha.enabled=true \
-  --set ha.replication.synchronous.enabled=false
+  --set ha.replication.synchronous.enabled=true
 ```
 
 ## 启动流程
@@ -158,8 +158,9 @@ polar_basebackup \
 ```
 
 5. standby 写入 `standby.signal` 和 `primary_conninfo`。
-6. HA 节点写入复制参数。默认包含 `synchronous_commit=on` 和
-   `synchronous_standby_names='FIRST 1 (*)'`。
+6. HA 节点写入复制参数。默认使用异步复制；只有开启
+   `ha.replication.synchronous.enabled=true` 时才写入 `synchronous_commit` 和
+   `synchronous_standby_names`。
 7. 每个 Pod 的 `ha-manager` 开始运行。
 8. primary 创建或续约 Lease，并把当前 WAL LSN、timeline 写入 Lease annotation。
 9. `ha-manager` 根据本地数据库状态和 Lease 状态更新 Pod role label。
@@ -212,7 +213,7 @@ kubectl exec -n polardb polardb-for-postgresql-polardb-0 -c ha-manager -- \
   curl -s http://127.0.0.1:5001/v1.0/getrole
 ```
 
-查看同步复制状态：
+查看复制和同步状态：
 
 ```bash
 kubectl exec -n polardb <primary-pod> -c polardb -- \
@@ -260,9 +261,68 @@ ha:
 开启自动切换前至少确认：
 
 1. 业务能接受自动 promote 带来的旧主隔离和人工 rejoin 流程。
-2. 默认同步复制满足业务写入可用性要求。
+2. 异步复制下可能丢失最近已提交但未复制到 standby 的事务；如果业务要求更低 RPO，应先评估并开启同步复制。
 3. `ha.failover.maximumLagOnFailoverBytes=0` 没有被放宽，除非业务明确接受 RPO。
 4. 已演练旧 primary 被 demote 后的保留、排查和全量重建流程。
+
+## 自动故障切换的坑点
+
+自动 failover 不是简单地把 standby 执行 `pg_ctl promote`。它会把复制一致性、旧主隔离、
+Service 切换和旧主恢复都变成同一个故障窗口里的问题。当前脚本版 HA 默认关闭自动切换，就是为了
+避免在这些问题没有被业务接受前自动做不可逆操作。
+
+开启 `ha.failover.enabled=true` 前，需要理解下面这些风险：
+
+- 默认异步复制下，primary 返回成功提交时 WAL 可能还没有传到 standby。此时 standby 被提升后，
+  旧 primary 上已经提交但新 primary 没有的事务会丢失。
+- `ha.failover.maximumLagOnFailoverBytes=0` 只要求 standby replay 到 Lease 中最后一次记录的
+  primary LSN。Lease annotation 不是每笔事务实时刷新；如果 primary 在最后一次续约后又提交了数据
+  再故障，这部分数据仍然可能丢失。
+- 放宽 `maximumLagOnFailoverBytes` 会进一步扩大允许接管的落后窗口。这个值不是“优化参数”，而是
+  明确接受 RPO 的参数。
+- `ha.replication.synchronous.enabled=true` 可以降低已提交事务丢失风险，但它不是强 fencing。
+  它要求 PostgreSQL 等待同步 standby 确认 WAL；如果 standby 不健康，写入可能等待、超时或不可用。
+- Kubernetes `Lease` 只代表 Kubernetes API 视角下的租约状态，不是 etcd/raft 风格的数据库仲裁。
+  如果旧 primary 还能服务业务但访问 Kubernetes API 异常，仍然需要依赖本地 `ha-manager` fencing。
+- 当前只检查准备接管的 standby 自己的 replay LSN，没有收集所有 standby 后选择全局最新节点。
+  多 standby 同时可接管时，最先抢到 Lease 的节点不一定是 replay 最新的节点。
+- 当前没有复制槽自动管理。standby 长时间落后时，primary 可能已经清理所需 WAL，standby 后续需要
+  重新 basebackup。
+- 自动 promote 后旧 primary 不能直接改配置变 standby。它可能已经和新 primary 形成 timeline 分叉。
+  当前 PolarDB 布局下标准 `pg_rewind` 不可用，因此默认只能停住并保留 PVC，或者在人工确认后全量重建。
+- Service 切换依赖 Pod label 和 Endpoints 更新，客户端连接池还需要自己处理断连、重连和事务重试。
+  自动 failover 只负责切换数据库角色，不保证应用透明无感。
+
+因此，建议默认保持 `ha.failover.enabled=false`。只有在业务明确接受 RPO、旧主处理流程、客户端重连
+行为，并做过故障演练后，才打开自动 failover。
+
+## 与 PostgreSQL/Patroni 的差异
+
+PostgreSQL 内核本身不提供完整自动 HA 管理器。它提供的是底层能力：streaming replication、
+`standby.signal`、`pg_ctl promote`、timeline、同步复制参数和 `pg_rewind`。是否自动判断主库故障、
+选择候选 standby、修改 Service/连接入口、隔离旧主和恢复旧主，通常由外部组件完成。
+
+常见 PostgreSQL HA 方案，比如 Patroni 或 KubeBlocks 官方 PostgreSQL addon，和当前脚本版方案有
+明显差异：
+
+- Patroni 使用 DCS 保存集群状态和 leader lock，并有成熟的状态机处理 leader 续约、候选选择、
+  promote、rewind/reinitialize、REST API、`patronictl` 等操作。当前方案只用 Kubernetes Lease 和
+  一个轻量 sidecar 循环。
+- KubeBlocks PostgreSQL addon 是 Patroni/Spilo 体系。它在异步复制下也可以自动 failover，通常通过
+  `maximum_lag_on_failover` 限制候选节点落后程度。这种模式偏可用性，但异步下仍可能丢数据。
+- PostgreSQL 标准数据目录可以在条件满足时使用 `pg_rewind` 把旧 primary 修正为新 timeline 的
+  standby。当前 PolarDB localfs/shared data 布局下，标准 `pg_rewind` 实测不可用，所以不提供自动
+  增量 rejoin。
+- PostgreSQL/Patroni 的受控 switchover 会先确认候选 standby 追平，再有序切换主从。当前脚本版还没有
+  实现安全 switchover 命令，因此滚动维护需要人工控制，不能把计划内切换和故障 failover 混用。
+- Patroni 会持续维护更多成员状态并能选择更合适的候选节点；当前方案只在某个 standby 看到 Lease 过期
+  后检查自己是否可接管。
+- Patroni 生态对旧主恢复、reinitialize、同步模式、REST 管理接口和运维工具链更完整。当前方案目标是
+  给 PolarDB 镜像提供可部署、可人工恢复的基本 HA 闭环，不等价于生产级 PostgreSQL HA operator。
+
+和 PostgreSQL/Patroni 相比，当前方案最重要的行为差异是：默认异步复制、默认不自动切换、旧主默认
+停住并保留数据，等待人工确认。这个默认值牺牲自动恢复速度，换取更明确的数据安全边界和可审计的
+人工处理窗口。
 
 ## 旧 primary fencing
 
@@ -350,8 +410,8 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
 kubectl delete pod -n polardb <old-primary-pod>
 ```
 
-全量重建会清理旧 primary 的本地数据并从当前 primary 重新 clone。如果同步复制曾被关闭，或者旧
-primary 上存在没有同步到新 primary 的已提交事务，这些事务会丢失，因此不要在无法确认新 primary
+全量重建会清理旧 primary 的本地数据并从当前 primary 重新 clone。如果使用异步复制，或者旧
+primary 上存在没有复制到新 primary 的已提交事务，这些事务会丢失，因此不要在无法确认新 primary
 健康和可接受 RPO 时执行该操作。
 
 7. 旧 primary 成功作为 standby 回来后，建议关闭全量重建开关，避免后续误操作：
@@ -414,7 +474,8 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
 - 旧 primary 故障后默认保留数据并停住，需要人工确认 rejoin 或显式重建。
 - 没有安全 switchover，滚动维护时仍需要谨慎。
 - 直接 Helm HA 默认使用 `OnDelete` 更新策略，避免自动重启 primary；升级时需要人工控制顺序。
-- 默认同步复制降低数据丢失风险，但不能替代强 fencing；它也会在 standby 不可用时牺牲写入可用性。
+- 默认异步复制优先写入可用性；如果打开自动 failover，需要接受异步复制的数据丢失窗口，
+  或显式开启同步复制并接受写入可用性下降。
 
 ## 后续优化清单
 

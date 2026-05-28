@@ -34,8 +34,11 @@ The first version keeps the existing script-based HA manager:
 - Automatic failover is disabled by default (`ha.failover.enabled=false`).
 - If automatic failover is explicitly enabled, candidates check replay lag and
   timeline before promotion.
-- PostgreSQL synchronous replication is enabled by default with
-  `synchronous_commit=on` and `synchronous_standby_names='FIRST 1 (*)'`.
+- PostgreSQL asynchronous replication is used by default
+  (`ha.replication.synchronous.enabled=false`).
+- Async replication keeps writes available when standbys are unavailable, but a
+  later forced failover can lose committed transactions that never reached a
+  standby.
 - Automatic failover candidates must replay to the last WAL LSN recorded in the
   Lease by default (`ha.maximumLagOnFailoverBytes=0`).
 - A demoted old primary preserves its PVC and stops by default. Full basebackup

@@ -116,7 +116,7 @@ ha_enabled() {
 }
 
 ha_synchronous_replication_enabled() {
-    case "${POLARDB_HA_SYNCHRONOUS_REPLICATION_ENABLED:-1}" in
+    case "${POLARDB_HA_SYNCHRONOUS_REPLICATION_ENABLED:-0}" in
         1|true|TRUE|yes|YES|on|ON)
             return 0
             ;;

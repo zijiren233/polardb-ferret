@@ -54,11 +54,12 @@ helm upgrade -i polardb-for-postgresql ./deploy/charts/polardb-for-postgresql \
 ```
 
 HA mode defaults to manual failover (`ha.failover.enabled=false`) and
-PostgreSQL synchronous replication with
-`synchronous_commit=on` and `synchronous_standby_names='FIRST 1 (*)'`. This
-keeps replication, Lease tracking, service roles, and old-primary fencing active
-without automatically promoting a standby when the primary fails. Writes can
-wait when no standby is healthy. In HA mode the StatefulSet uses
+PostgreSQL asynchronous replication (`ha.replication.synchronous.enabled=false`).
+This keeps replication, Lease tracking, service roles, and old-primary fencing
+active without automatically promoting a standby when the primary fails. Async
+replication avoids blocking writes when standbys are unavailable, but it can
+lose committed transactions that have not reached a standby if failover is
+forced later. In HA mode the StatefulSet uses
 `podManagementPolicy=Parallel` by default so standby pods can bootstrap without
 strict ordinal serialization. See `docs/high-availability.md` for operations
 and recovery details.
